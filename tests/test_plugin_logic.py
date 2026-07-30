@@ -536,6 +536,11 @@ class ManualReviewPolicyTests(unittest.TestCase):
                 kind="direct_message", source="direct_message", user_id="1"
             )
         )
+        self.assertTrue(
+            plugin._requires_human_review(
+                kind="auto_browse", source="auto_browse", user_id=""
+            )
+        )
 
     def test_direct_message_auto_approve_list_bypasses_only_review(self) -> None:
         plugin = self.plugin(

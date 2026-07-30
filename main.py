@@ -691,10 +691,15 @@ class XhhRobotPlugin(Star):
             )
             await self._deliver_approved_review(item)
             completed = await self.review_store.mark_sent(review_id)
+            success_message = (
+                "审核通过，自动巡帖评论已发布。"
+                if item.get("kind") == "auto_browse"
+                else "审核通过，回复已发送。"
+            )
             return jsonify(
                 {
                     "ok": True,
-                    "message": "审核通过，回复已发送。",
+                    "message": success_message,
                     "item": completed,
                 }
             )
@@ -1121,7 +1126,17 @@ class XhhRobotPlugin(Star):
             )
 
         result = BrowseRunResult()
-        dry_run = force_dry_run or self._bool_cfg("auto_browse.dry_run", False)
+        configured_dry_run = self._bool_cfg("auto_browse.dry_run", False)
+        dry_run = force_dry_run or configured_dry_run
+        review_auto_browse = (
+            not force_dry_run
+            and self._requires_human_review(
+                kind="auto_browse",
+                source="auto_browse",
+                user_id="",
+            )
+        )
+        non_publishing = dry_run or review_auto_browse
         async with self._cycle_lock:
             snapshot = await self.store.snapshot()
             now = time.time()
@@ -1130,7 +1145,7 @@ class XhhRobotPlugin(Star):
                 snapshot,
                 since=now - 24 * 60 * 60,
             )
-            if not dry_run and written_before >= daily_limit:
+            if not non_publishing and written_before >= daily_limit:
                 result.notes.append(f"滚动 24 小时评论额度已满（{daily_limit} 条）。")
                 return result
 
@@ -1180,9 +1195,15 @@ class XhhRobotPlugin(Star):
             while (
                 remaining
                 and selection_attempts < max_evaluations
-                and result.commented + result.uncertain + result.dry_run < max_comments
                 and (
-                    dry_run
+                    result.commented
+                    + result.uncertain
+                    + result.dry_run
+                    + result.pending_review
+                    < max_comments
+                )
+                and (
+                    non_publishing
                     or written_before + result.commented + result.uncertain
                     < daily_limit
                 )
@@ -1309,6 +1330,19 @@ class XhhRobotPlugin(Star):
                         evaluated=True,
                     )
                     result.skipped += 1
+                    continue
+
+                if review_auto_browse:
+                    await self._hold_auto_browse_for_review(
+                        selected=selected,
+                        post=post,
+                        comment=comment,
+                        reason=decision.reason,
+                    )
+                    result.pending_review += 1
+                    result.notes.append(
+                        f"待审核帖子 {selected.link_id}：{comment[:300]}"
+                    )
                     continue
 
                 if dry_run:
@@ -1543,6 +1577,63 @@ class XhhRobotPlugin(Star):
         if browse_extra:
             parts.append(browse_extra)
         return "\n\n".join(part.strip() for part in parts if part.strip())
+
+    async def _hold_auto_browse_for_review(
+        self,
+        *,
+        selected: FeedPost,
+        post: PostContext,
+        comment: str,
+        reason: str,
+    ) -> None:
+        review_key = f"auto_browse:{selected.link_id}:{uuid.uuid4().hex}"
+        title = post.title or selected.title
+        incoming_text = "\n\n".join(
+            value
+            for value in (
+                title,
+                post.body_text,
+            )
+            if value
+        )
+        item = await self.review_store.enqueue(
+            review_key=review_key,
+            kind="auto_browse",
+            source="auto_browse",
+            source_event_key=review_key,
+            message_id=str(selected.link_id),
+            user_id=selected.author_id,
+            user_name=selected.author_name or post.author_name,
+            incoming_text=incoming_text,
+            incoming_image_urls=post.image_urls,
+            target={
+                "link_id": selected.link_id,
+                "title": title,
+                "author_id": selected.author_id or post.author_id,
+                "author_name": selected.author_name or post.author_name,
+                "decision_reason": reason,
+                "review_key": review_key,
+            },
+            reply_text=comment,
+            reply_image_sources=[],
+        )
+        try:
+            await self.store.record_browse(
+                link_id=selected.link_id,
+                title=title,
+                author_id=selected.author_id or post.author_id,
+                status="pending_review",
+                reason=reason or "等待管理员审核自动巡帖评论。",
+                comment_text=comment,
+                evaluated=True,
+            )
+        except BaseException:
+            await self.review_store.reject(
+                int(item["id"]),
+                expected_revision=int(item["revision"]),
+                reason="自动巡帖状态保存失败，审核记录自动取消。",
+            )
+            raise
 
     async def _record_browse_skip(self, post: FeedPost, reason: str) -> None:
         await self.store.record_browse(
@@ -2456,6 +2547,11 @@ class XhhRobotPlugin(Star):
     ) -> bool:
         if not self._bool_cfg("manual_review.enabled", False):
             return False
+        if kind == "auto_browse":
+            return self._bool_cfg(
+                "manual_review.review_auto_browse_comments",
+                True,
+            )
         if kind == "direct_message":
             if str(user_id) in self._id_set_cfg(
                 "manual_review.dm_auto_approve_user_ids"
@@ -2643,6 +2739,11 @@ class XhhRobotPlugin(Star):
         images = self._string_sequence(item.get("reply_image_sources"))
         kind = str(item.get("kind") or "")
 
+        if kind == "auto_browse":
+            async with self._cycle_lock:
+                await self._deliver_approved_auto_browse(item, target, text)
+            return
+
         if kind == "comment":
             mention = Mention.from_dict(target)
             if not mention.is_actionable:
@@ -2734,6 +2835,191 @@ class XhhRobotPlugin(Star):
                 )
             )
 
+    async def _deliver_approved_auto_browse(
+        self,
+        item: Mapping[str, Any],
+        target: Mapping[str, Any],
+        comment: str,
+    ) -> None:
+        assert self.client is not None
+        try:
+            link_id = int(target.get("link_id") or 0)
+        except (TypeError, ValueError):
+            link_id = 0
+        if link_id <= 0:
+            raise ValueError("审核记录缺少有效的自动巡帖帖子 ID。")
+
+        snapshot = await self.store.snapshot()
+        browse = snapshot.get("auto_browse")
+        browse = browse if isinstance(browse, Mapping) else {}
+        records = browse.get("records")
+        records = records if isinstance(records, Mapping) else {}
+        source_record = records.get(str(link_id))
+        if (
+            not isinstance(source_record, Mapping)
+            or source_record.get("status") != "pending_review"
+        ):
+            raise ReviewConflictError("自动巡帖草稿已被其他流程处理，请刷新审核队列。")
+
+        now = time.time()
+        daily_limit = self._int_cfg(
+            "auto_browse.max_comments_per_24h",
+            3,
+            1,
+            20,
+        )
+        if (
+            self._browse_write_count(snapshot, since=now - 24 * 60 * 60)
+            >= daily_limit
+        ):
+            raise XhhError(
+                f"滚动 24 小时自动巡帖评论额度已满（{daily_limit} 条）。",
+                retryable=True,
+                retry_after=3600,
+            )
+
+        post = await self.client.fetch_post_context(link_id)
+        author_id = str(post.author_id or target.get("author_id") or "")
+        author_name = str(post.author_name or target.get("author_name") or "")
+        title = str(post.title or target.get("title") or "")
+        if self.auth is not None and author_id == str(self.auth.heybox_id):
+            raise ValueError("帖子属于当前机器人账号，禁止自动评论自己。")
+        if author_id in self._id_set_cfg("auto_browse.blocked_author_ids"):
+            raise ValueError("帖子作者位于自动巡帖屏蔽列表。")
+
+        author_cooldown = (
+            self._int_cfg(
+                "auto_browse.author_cooldown_hours",
+                72,
+                0,
+                720,
+            )
+            * 60
+            * 60
+        )
+        if author_id and author_cooldown:
+            for record in records.values():
+                if not isinstance(record, Mapping):
+                    continue
+                if int(record.get("link_id") or 0) == link_id:
+                    continue
+                if (
+                    str(record.get("author_id") or "") == author_id
+                    and record.get("status") in {"commented", "uncertain"}
+                    and float(record.get("completed_at") or 0)
+                    >= now - author_cooldown
+                ):
+                    raise XhhError(
+                        "帖子作者仍在自动巡帖评论冷却期。",
+                        retryable=True,
+                        retry_after=3600,
+                    )
+
+        summary = FeedPost(
+            link_id=link_id,
+            title=title,
+            author_id=author_id,
+            author_name=author_name,
+        )
+        allowed, filter_reason = keyword_allowed(
+            searchable_text(summary, post),
+            required=self._string_list_cfg("auto_browse.required_keywords"),
+            blocked=self._string_list_cfg("auto_browse.blocked_keywords"),
+        )
+        if not allowed:
+            raise ValueError(filter_reason)
+        visible_content = "\n".join(
+            value for value in (title, post.body_text) if value
+        ).strip()
+        min_post_chars = self._int_cfg(
+            "auto_browse.min_post_chars",
+            30,
+            0,
+            10000,
+        )
+        max_post_chars = self._int_cfg(
+            "auto_browse.max_post_chars",
+            20000,
+            0,
+            100000,
+        )
+        if len(visible_content) < min_post_chars:
+            raise ValueError(f"帖子当前可读内容少于 {min_post_chars} 字符。")
+        if max_post_chars and len(visible_content) > max_post_chars:
+            raise ValueError(f"帖子当前可读内容超过 {max_post_chars} 字符。")
+
+        min_comment_chars = self._int_cfg(
+            "auto_browse.min_comment_chars",
+            8,
+            1,
+            100,
+        )
+        max_comment_chars = max(
+            min_comment_chars,
+            self._int_cfg(
+                "auto_browse.max_comment_chars",
+                300,
+                20,
+                1000,
+            ),
+        )
+        validation_error = self._browse_comment_validation_error(
+            comment,
+            snapshot,
+            min_chars=min_comment_chars,
+            max_chars=max_comment_chars,
+        )
+        if validation_error:
+            raise ValueError(validation_error)
+
+        reason = str(target.get("decision_reason") or "")
+        await self.store.record_browse(
+            link_id=link_id,
+            title=title,
+            author_id=author_id,
+            status="sending",
+            reason=reason,
+            comment_text=comment,
+        )
+        comment_result = await self.client.create_comment(
+            text=comment,
+            link_id=link_id,
+        )
+        await self.store.record_browse(
+            link_id=link_id,
+            title=title,
+            author_id=author_id,
+            status="commented",
+            reason=reason,
+            comment_text=comment,
+        )
+        event_key = str(item.get("review_key") or f"auto_browse:{link_id}")
+        await self._record_bot_comment(
+            kind="auto_browse",
+            content=comment,
+            link_id=link_id,
+            comment_id=extract_comment_id(comment_result),
+            target_user_id=author_id,
+            event_key=event_key,
+        )
+        logger.info(
+            "%s approved auto-browse comment succeeded: link_id=%s "
+            "author_id=%s title=%r comment=%r",
+            PLUGIN_ID,
+            link_id,
+            author_id,
+            title,
+            comment,
+        )
+        if self._bool_cfg("auto_browse.notify_on_comment", True):
+            await self._notify(
+                "小黑盒自动巡帖审核评论成功\n\n"
+                f"帖子：{title or '[无标题]'}\n\n"
+                f"Bot 评论：\n{comment}\n\n"
+                f"帖子 ID：{link_id}\n"
+                f"作者 ID：{author_id}"
+            )
+
     async def _handle_approved_review_error(
         self,
         review_id: int,
@@ -2775,8 +3061,15 @@ class XhhRobotPlugin(Star):
                         item.get("reply_image_sources")
                     ),
                 )
+            elif kind == "auto_browse":
+                await self._mark_auto_browse_review_terminal(
+                    item,
+                    status="uncertain",
+                    reason=reason,
+                    archive=True,
+                )
             await self.review_store.mark_uncertain(review_id, reason)
-            return "发送结果无法确认，已停止重试以避免重复回复。", 502
+            return "发送结果无法确认，已停止重试以避免重复发送。", 502
 
         terminal = isinstance(exc, (ValueError, ReviewConflictError))
         if isinstance(exc, XhhError):
@@ -2791,6 +3084,12 @@ class XhhRobotPlugin(Star):
                 await self.dm_store.mark_skipped(message.event_key, reason)
                 if isinstance(exc, XhhError) and exc.action_restricted:
                     await self._block_automatic_direct_messages(reason, message)
+            elif kind == "auto_browse":
+                await self._mark_auto_browse_review_terminal(
+                    item,
+                    status="failed",
+                    reason=reason,
+                )
             await self.review_store.mark_failed(review_id, reason)
             return f"平台拒绝发送：{exc}", 409
 
@@ -2801,6 +3100,8 @@ class XhhRobotPlugin(Star):
         elif kind == "direct_message":
             message = DirectMessage.from_dict(target)
             await self.dm_store.return_to_review(message.event_key, reason)
+        elif kind == "auto_browse":
+            await self._return_auto_browse_to_review(item, reason)
         await self.review_store.return_pending(review_id, reason)
         if isinstance(exc, XhhError) and exc.auth_required:
             await self._set_auth_invalid(str(exc))
@@ -2818,8 +3119,64 @@ class XhhRobotPlugin(Star):
             await self.store.mark_rejected(mention.message_id, reason)
             await self._archive_received_status(mention, "rejected", reason)
             return
+        if item.get("kind") == "auto_browse":
+            await self._mark_auto_browse_review_terminal(
+                item,
+                status="rejected",
+                reason=reason,
+            )
+            return
         message = DirectMessage.from_dict(target)
         await self.dm_store.mark_rejected(message.event_key, reason)
+
+    async def _return_auto_browse_to_review(
+        self,
+        item: Mapping[str, Any],
+        reason: str,
+    ) -> None:
+        target = item.get("target")
+        target = target if isinstance(target, Mapping) else {}
+        link_id = int(target.get("link_id") or 0)
+        await self.store.record_browse(
+            link_id=link_id,
+            title=str(target.get("title") or ""),
+            author_id=str(target.get("author_id") or ""),
+            status="pending_review",
+            reason=reason,
+            comment_text=str(item.get("reply_text") or ""),
+        )
+
+    async def _mark_auto_browse_review_terminal(
+        self,
+        item: Mapping[str, Any],
+        *,
+        status: str,
+        reason: str,
+        archive: bool = False,
+    ) -> None:
+        target = item.get("target")
+        target = target if isinstance(target, Mapping) else {}
+        link_id = int(target.get("link_id") or 0)
+        comment = str(item.get("reply_text") or "")
+        author_id = str(target.get("author_id") or "")
+        await self.store.record_browse(
+            link_id=link_id,
+            title=str(target.get("title") or ""),
+            author_id=author_id,
+            status=status,
+            reason=reason,
+            comment_text=comment,
+        )
+        if archive:
+            await self._record_bot_comment(
+                kind="auto_browse",
+                content=comment,
+                link_id=link_id,
+                status="uncertain",
+                reason=reason,
+                target_user_id=author_id,
+                event_key=str(item.get("review_key") or ""),
+            )
 
     @staticmethod
     def _string_sequence(value: Any) -> list[str]:

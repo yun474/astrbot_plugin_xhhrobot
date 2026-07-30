@@ -1022,6 +1022,7 @@
               <option value="">全部</option>
               <option value="comment">评论</option>
               <option value="direct_message">私信</option>
+              <option value="auto_browse">自动巡帖评论</option>
             </select>
           </div>
           <div class="field">
@@ -1033,6 +1034,7 @@
               <option value="comment_reply">评论回复</option>
               <option value="direct_message">好友私信</option>
               <option value="stranger_direct_message">陌生人私信</option>
+              <option value="auto_browse">自动巡帖</option>
             </select>
           </div>
           <div class="filter-actions">
@@ -1185,7 +1187,7 @@
       <div class="dialog-body">
         <div class="detail-grid" id="reviewDetails"></div>
         <section class="message-block" id="reviewReplyBlock">
-          <h3>对方消息</h3>
+          <h3 id="reviewIncomingHeading">对方消息</h3>
           <pre class="message-content" id="reviewIncomingText"></pre>
           <ul class="review-image-list" id="reviewIncomingImages"></ul>
         </section>
@@ -1707,6 +1709,9 @@
       }
 
       function reviewTypeLabel(record) {
+        if (record.kind === "auto_browse") {
+          return "自动巡帖评论";
+        }
         if (record.kind === "direct_message") {
           return record.source === "stranger_direct_message"
             ? "陌生人私信"
@@ -1803,17 +1808,20 @@
       function openReview(record) {
         state.selectedReview = record;
         const target = record.target || {};
+        const autoBrowse = record.kind === "auto_browse";
         byId("reviewDetails").innerHTML = [
           ["类型", reviewTypeLabel(record)],
           [
             "审核方式",
-            record.phase === "incoming_message"
+            record.kind === "auto_browse"
+              ? "自动巡帖草稿审核"
+              : record.phase === "incoming_message"
               ? "先审核后生成"
               : "先生成后审核",
           ],
           ["状态", reviewStatusLabel(record.status)],
-          ["用户", record.user_name || record.user_id || "未知"],
-          ["用户 ID", record.user_id || "无"],
+          [autoBrowse ? "作者" : "用户", record.user_name || record.user_id || "未知"],
+          [autoBrowse ? "作者 ID" : "用户 ID", record.user_id || "无"],
           ["帖子 ID", target.link_id || "无"],
           ["评论 ID", target.comment_id || "无"],
           ["消息 ID", record.message_id || "无"],
@@ -1826,6 +1834,9 @@
           .join("");
         byId("reviewIncomingText").textContent =
           record.incoming_text || "[仅图片消息]";
+        byId("reviewIncomingHeading").textContent = autoBrowse
+          ? "帖子内容"
+          : "对方消息";
         renderImageSources(
           "reviewIncomingImages",
           record.incoming_image_urls,
@@ -1834,26 +1845,34 @@
         const editor = byId("reviewReplyEditor");
         const beforeGeneration = record.phase === "incoming_message";
         byId("reviewReplyBlock").hidden = false;
-        byId("reviewReplyHeading").textContent = beforeGeneration
-          ? "批准后的处理"
-          : "准备发送的回复";
+        byId("reviewReplyHeading").textContent = autoBrowse
+          ? "准备发布的巡帖评论"
+          : beforeGeneration
+            ? "批准后的处理"
+            : "准备发送的回复";
         editor.hidden = beforeGeneration;
         editor.value = record.content_visible ? record.reply_text || "" : "";
         editor.disabled =
           beforeGeneration ||
           !record.content_visible ||
           record.status !== "pending";
-        byId("reviewContentNote").textContent = beforeGeneration
-          ? "批准后才会调用 AstrBot 生成回复，并按正常流程自动发送。"
-          : record.content_visible
-            ? "批准前可以直接修改回复正文；附带图片保持不变。"
-            : "WebUI 正文显示已关闭。批准时会发送数据库中保存的原始草稿，无法在页面编辑。";
+        byId("reviewContentNote").textContent = autoBrowse
+          ? record.content_visible
+            ? "批准前可以修改评论正文。发布前会重新检查帖子、额度、作者和内容规则。"
+            : "WebUI 正文显示已关闭。批准时会发布数据库中保存的原始草稿，并重新检查安全规则。"
+          : beforeGeneration
+            ? "批准后才会调用 AstrBot 生成回复，并按正常流程自动发送。"
+            : record.content_visible
+              ? "批准前可以直接修改回复正文；附带图片保持不变。"
+              : "WebUI 正文显示已关闭。批准时会发送数据库中保存的原始草稿，无法在页面编辑。";
         byId("reviewRejectReason").value = "";
         byId("reviewRejectReason").disabled = record.status !== "pending";
         byId("approveReviewButton").hidden = record.status !== "pending";
-        byId("approveReviewButton").textContent = beforeGeneration
-          ? "批准并生成回复"
-          : "批准并发送";
+        byId("approveReviewButton").textContent = autoBrowse
+          ? "批准并发布评论"
+          : beforeGeneration
+            ? "批准并生成回复"
+            : "批准并发送";
         byId("rejectReviewButton").hidden = record.status !== "pending";
         byId("reviewDialog").showModal();
       }
@@ -1866,7 +1885,12 @@
         approveButton.disabled = true;
         rejectButton.disabled = true;
         const beforeGeneration = record.phase === "incoming_message";
-        approveButton.textContent = beforeGeneration ? "批准中" : "发送中";
+        const autoBrowse = record.kind === "auto_browse";
+        approveButton.textContent = beforeGeneration
+          ? "批准中"
+          : autoBrowse
+            ? "发布中"
+            : "发送中";
         const body = {
           id: record.id,
           revision: record.revision,
@@ -1886,9 +1910,11 @@
         } finally {
           approveButton.disabled = false;
           rejectButton.disabled = false;
-          approveButton.textContent = beforeGeneration
-            ? "批准并生成回复"
-            : "批准并发送";
+          approveButton.textContent = autoBrowse
+            ? "批准并发布评论"
+            : beforeGeneration
+              ? "批准并生成回复"
+              : "批准并发送";
         }
       }
 

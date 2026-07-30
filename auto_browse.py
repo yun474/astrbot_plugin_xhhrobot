@@ -25,6 +25,7 @@ class BrowseRunResult:
     selected: int = 0
     evaluated: int = 0
     commented: int = 0
+    pending_review: int = 0
     skipped: int = 0
     dry_run: int = 0
     failed: int = 0
@@ -34,7 +35,8 @@ class BrowseRunResult:
     def summary(self) -> str:
         text = (
             f"拉取 {self.fetched}，候选 {self.eligible}，选中 {self.selected}，"
-            f"评估 {self.evaluated}，评论 {self.commented}，跳过 {self.skipped}，"
+            f"评估 {self.evaluated}，评论 {self.commented}，"
+            f"待审核 {self.pending_review}，跳过 {self.skipped}，"
             f"预览 {self.dry_run}，失败 {self.failed}，发送不确定 {self.uncertain}"
         )
         if self.notes:

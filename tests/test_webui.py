@@ -331,6 +331,8 @@ class WebUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("批准并生成回复", page)
         self.assertIn('record.phase === "incoming_message"', page)
         self.assertIn("先审核后生成", page)
+        self.assertIn("自动巡帖草稿审核", page)
+        self.assertIn("批准并发布评论", page)
 
     async def test_web_login_clear_returns_updated_state_and_cookie_warning(
         self,

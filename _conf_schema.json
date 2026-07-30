@@ -242,7 +242,7 @@
   "manual_review": {
     "type": "object",
     "description": "人工审核",
-    "hint": "开启后可选择先生成回复再审核，或先审核原消息再交给 AstrBot 生成；待审核内容会进入插件 WebUI，由管理员批准或拒绝。人工审核依赖标准事件桥。",
+    "hint": "开启后可选择先生成回复再审核，或先审核原消息再交给 AstrBot 生成；自动巡帖生成的评论草稿也可进入同一 WebUI 审核队列。评论与私信入站审核依赖标准事件桥，自动巡帖审核不依赖。",
     "obvious_hint": true,
     "items": {
       "enabled": {
@@ -296,6 +296,13 @@
         "description": "审核陌生人私信回复",
         "default": true,
         "hint": "陌生人私信生成的回复先进入人工审核队列；仍需同时开启回复陌生人私信。"
+      },
+      "review_auto_browse_comments": {
+        "type": "bool",
+        "description": "审核自动巡帖评论",
+        "default": true,
+        "hint": "自动巡帖选帖并生成评论后不直接发布，而是进入 WebUI 审核。auto_browse.dry_run 开启时，定时生成的预览也会进入审核队列；手动执行 /小黑盒逛帖 预览 仍只返回一次性预览。",
+        "obvious_hint": true
       },
       "dm_auto_approve_user_ids": {
         "type": "list",

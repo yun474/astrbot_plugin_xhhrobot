@@ -81,6 +81,7 @@ class ReviewStore:
         if not values["review_key"] or values["kind"] not in {
             "comment",
             "direct_message",
+            "auto_browse",
         }:
             raise ValueError("审核记录缺少有效的唯一键或类型。")
         if values["phase"] not in {"generated_reply", "incoming_message"}:
