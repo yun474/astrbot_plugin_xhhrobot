@@ -29,6 +29,14 @@ class MemoryBackend:
         self.values[key] = copy.deepcopy(value)
 
 
+class RecordingNotificationContext:
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, str]] = []
+
+    async def send_message(self, umo: str, chain: object) -> None:
+        self.sent.append((umo, chain.get_plain_text()))
+
+
 class BrowseClient:
     def __init__(self, *, block_send: bool = False) -> None:
         self.feed_calls = 0
@@ -95,8 +103,11 @@ class AutoBrowseTests(unittest.IsolatedAsyncioTestCase):
             "manual_review": {
                 "enabled": manual_review,
                 "review_auto_browse_comments": True,
+                "notify_on_pending": True,
+                "notification_umo": "test:FriendMessage:review",
             },
         }
+        plugin.context = RecordingNotificationContext()
         plugin.store = store
         plugin.client = client
         plugin.auth = AuthInfo(cookie="cookie=value", heybox_id="999")
@@ -160,6 +171,13 @@ class AutoBrowseTests(unittest.IsolatedAsyncioTestCase):
             snapshot["auto_browse"]["records"]["501"]["status"],
             "pending_review",
         )
+        self.assertEqual(len(plugin.context.sent), 1)
+        umo, notification = plugin.context.sent[0]
+        self.assertEqual(umo, "test:FriendMessage:review")
+        self.assertIn("类型：自动巡帖评论", notification)
+        self.assertIn("审核阶段：回复草稿待审核", notification)
+        self.assertIn("帖子：值得讨论的帖子", notification)
+        self.assertIn("帖子 ID：501", notification)
         reviews = await plugin.review_store.search(
             status="pending",
             kind="auto_browse",

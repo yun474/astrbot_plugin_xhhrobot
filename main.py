@@ -1634,6 +1634,7 @@ class XhhRobotPlugin(Star):
                 reason="自动巡帖状态保存失败，审核记录自动取消。",
             )
             raise
+        await self._notify_review_pending(item)
 
     async def _record_browse_skip(self, post: FeedPost, reason: str) -> None:
         await self.store.record_browse(
@@ -2626,6 +2627,7 @@ class XhhRobotPlugin(Star):
             )
             raise ReviewConflictError("源评论状态已经变化，无法进入审核队列。")
         await self._archive_received_status(mention, "pending_review")
+        await self._notify_review_pending(item)
 
     async def _hold_direct_message_for_review(
         self,
@@ -2659,6 +2661,7 @@ class XhhRobotPlugin(Star):
                 reason="源私信状态已经变化，审核记录自动取消。",
             )
             raise ReviewConflictError("源私信状态已经变化，无法进入审核队列。")
+        await self._notify_review_pending(item)
 
     async def _release_review_for_generation(
         self,
@@ -4301,14 +4304,110 @@ class XhhRobotPlugin(Star):
             lines.append("最近错误：" + self._last_error[:300])
         return "\n".join(lines)
 
-    async def _notify(self, text: str) -> None:
-        umo = self._str_cfg("notifications.umo", "")
+    async def _notify(self, text: str, *, target_umo: str | None = None) -> None:
+        umo = (
+            str(target_umo or "").strip()
+            if target_umo is not None
+            else self._str_cfg("notifications.umo", "")
+        )
         if not umo:
             return
         try:
             await self.context.send_message(umo, MessageChain().message(text))
         except Exception as exc:
             logger.warning("%s notification failed: %r", PLUGIN_ID, exc)
+
+    async def _notify_review_pending(self, item: Mapping[str, Any]) -> None:
+        if not self._bool_cfg("manual_review.notify_on_pending", True):
+            return
+        umo = self._str_cfg("manual_review.notification_umo", "")
+        if not umo:
+            umo = self._str_cfg("notifications.umo", "")
+        if not umo:
+            return
+        await self._notify(
+            self._review_pending_notification(item),
+            target_umo=umo,
+        )
+
+    @staticmethod
+    def _review_pending_notification(item: Mapping[str, Any]) -> str:
+        source = str(item.get("source") or "")
+        source_label = {
+            "mention": "@ 消息回复",
+            "own_post_comment": "自己帖子下的普通评论回复",
+            "comment_reply": "别人对机器人评论的回复",
+            "direct_message": "好友私信回复",
+            "stranger_direct_message": "陌生人私信回复",
+            "auto_browse": "自动巡帖评论",
+        }.get(source, source or str(item.get("kind") or "未知"))
+        phase = str(item.get("phase") or "generated_reply")
+        phase_label = (
+            "原消息待审核，批准后再生成回复"
+            if phase == "incoming_message"
+            else "回复草稿待审核"
+        )
+        target = item.get("target")
+        target = target if isinstance(target, Mapping) else {}
+
+        def preview(value: Any, *, empty: str) -> str:
+            text = str(value or "").strip()
+            if not text:
+                return empty
+            text = " ".join(text.split())
+            return text if len(text) <= 300 else text[:297].rstrip() + "..."
+
+        lines = [
+            "小黑盒有内容待人工审核",
+            "",
+            f"类型：{source_label}",
+            f"审核阶段：{phase_label}",
+        ]
+        user_name = str(item.get("user_name") or "").strip()
+        user_id = str(item.get("user_id") or "").strip()
+        if user_name or user_id:
+            user = user_name or "[未知昵称]"
+            if user_id:
+                user += f"（ID：{user_id}）"
+            lines.append(f"来源用户：{user}")
+        title = str(target.get("title") or "").strip()
+        if title:
+            lines.append(f"帖子：{preview(title, empty='[无标题]')}")
+        lines.extend(
+            (
+                "",
+                "对方内容："
+                + preview(item.get("incoming_text"), empty="[无文字内容]"),
+            )
+        )
+        incoming_images = item.get("incoming_image_urls")
+        if isinstance(incoming_images, (list, tuple)) and incoming_images:
+            lines.append(f"对方图片：{len(incoming_images)} 张")
+        if phase != "incoming_message":
+            lines.extend(
+                (
+                    "",
+                    "回复草稿："
+                    + preview(item.get("reply_text"), empty="[仅图片草稿]"),
+                )
+            )
+            reply_images = item.get("reply_image_sources")
+            if isinstance(reply_images, (list, tuple)) and reply_images:
+                lines.append(f"草稿图片：{len(reply_images)} 张")
+        lines.append("")
+        if item.get("id") is not None:
+            lines.append(f"审核 ID：{item.get('id')}")
+        link_id = target.get("link_id")
+        if link_id:
+            lines.append(f"帖子 ID：{link_id}")
+        comment_id = target.get("comment_id")
+        if comment_id:
+            lines.append(f"评论 ID：{comment_id}")
+        message_id = str(item.get("message_id") or "").strip()
+        if message_id:
+            lines.append(f"消息 ID：{message_id}")
+        lines.extend(("", "请打开插件 WebUI 的“人工审核”页面处理。"))
+        return "\n".join(lines)
 
     @staticmethod
     def _reply_success_notification(

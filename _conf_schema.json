@@ -304,6 +304,20 @@
         "hint": "自动巡帖选帖并生成评论后不直接发布，而是进入 WebUI 审核。自动巡帖固定为先生成草稿后审核，不受“审核时机”选项影响。auto_browse.dry_run 开启时，定时生成的预览也会进入审核队列；手动执行 /小黑盒逛帖 预览 仍只返回一次性预览。",
         "obvious_hint": true
       },
+      "notify_on_pending": {
+        "type": "bool",
+        "description": "有内容待审核时发送提醒",
+        "default": true,
+        "hint": "评论、私信或自动巡帖草稿成功进入审核队列后发送一条提醒。关闭只停止提醒，不会关闭审核或自动处理待审核内容。",
+        "obvious_hint": true
+      },
+      "notification_umo": {
+        "type": "string",
+        "description": "待审核提醒目标会话",
+        "default": "",
+        "hint": "填写接收待审核提醒的完整 AstrBot UMO 会话 ID。留空时使用 notifications.umo；两处都留空则只保留 WebUI 审核记录，不主动提醒。",
+        "obvious_hint": true
+      },
       "dm_auto_approve_user_ids": {
         "type": "list",
         "description": "私信免审用户 ID",

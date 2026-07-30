@@ -162,9 +162,13 @@ WebUI 会在页面内绘制二维码，不需要浏览器直接加载小黑盒�
 | `manual_review.review_direct_messages` | 审核好友私信回复。 |
 | `manual_review.review_stranger_direct_messages` | 审核陌生人私信回复。 |
 | `manual_review.review_auto_browse_comments` | 审核自动巡帖生成的评论草稿。 |
+| `manual_review.notify_on_pending` | 评论、私信或自动巡帖草稿进入审核队列后发送提醒。 |
+| `manual_review.notification_umo` | 待审核提醒的目标 AstrBot 会话；留空时使用 `notifications.umo`。 |
 | `manual_review.dm_auto_approve_user_ids` | 这些用户的私信回复跳过审核并自动发送。 |
 
 私信免审列表只改变“是否人工审核”，不会绕过 `filters.allowed_user_ids`、`filters.allow_all_users` 或 `filters.blocked_user_ids`。屏蔽名单始终优先。评论与私信入站审核依赖 `event_bridge.enabled=true`；自动巡帖审核不依赖标准事件桥。
+
+待审核提醒会在审核项和源消息状态都保存成功后发送，覆盖 @ 消息、自己帖子下评论、别人对机器人评论的回复、好友私信、陌生人私信和自动巡帖评论。提醒包含审核类型、阶段、来源用户、内容或草稿摘要以及相关 ID；通知失败不会影响审核项入队。若 `manual_review.notification_umo` 与 `notifications.umo` 都留空，则不会主动发送提醒。
 
 批准操作会在真正外发前重新检查相应的用户范围、额度、冷却、静默时段和内容规则。自动巡帖草稿还会重新读取帖子，并检查 24 小时额度、作者屏蔽与冷却、关键词和评论长度。多人同时操作或重复点击只允许一个请求取得处理权。先审核模式的批准状态会持久化；插件重启或安全重试时不会要求再次审核。发送结果无法确认时不会自动重试。关闭 `webui.show_message_content` 后，审核页隐藏正文并禁止编辑，但仍可批准数据库内保存的原始草稿，或批准原消息进入生成队列。
 
@@ -435,7 +439,7 @@ curl --proxy 'socks5h://用户名:密码@主机:端口' https://api.ipify.org
 | `ai` | 提供商、人设、额外规则、帖子上下文、图片和生成限制。 |
 | `event_bridge` | 标准事件、并发、超时和外部消息工具隔离。 |
 | `filters` | 自动回复范围、自己帖子评论和用户允许或屏蔽列表。 |
-| `manual_review` | 审核时机、各类消息的人工审核开关和私信免审用户列表。 |
+| `manual_review` | 审核时机、各类消息的审核开关、待审核提醒和私信免审用户列表。 |
 | `polling` | 提及与普通评论轮询、分页、回复间隔和首次历史策略。 |
 | `direct_messages` | 私信入口、轮询、静默时段、额度和冷却。 |
 | `auto_browse` | 自主巡帖频率、额度、筛选、作者冷却和内容保护。 |

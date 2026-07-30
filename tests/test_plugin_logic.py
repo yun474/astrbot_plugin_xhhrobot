@@ -616,7 +616,13 @@ class ManualReviewFlowTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.temp_dir.cleanup)
         backend = MemoryBackend()
         self.plugin = object.__new__(XhhRobotPlugin)
-        self.plugin.config = {}
+        self.plugin.config = {
+            "manual_review": {
+                "notify_on_pending": True,
+                "notification_umo": "test:FriendMessage:review",
+            }
+        }
+        self.plugin.context = RecordingNotificationContext()
         self.plugin.store = StateStore(
             load_value=backend.load,
             save_value=backend.save,
@@ -661,6 +667,16 @@ class ManualReviewFlowTests(unittest.IsolatedAsyncioTestCase):
         reviews = await self.plugin.review_store.search(status="pending")
         self.assertEqual(reviews["total"], 1)
         self.assertEqual(reviews["records"][0]["reply_text"], "你好呀")
+        self.assertEqual(len(self.plugin.context.sent), 1)
+        umo, notification = self.plugin.context.sent[0]
+        self.assertEqual(umo, "test:FriendMessage:review")
+        self.assertIn("小黑盒有内容待人工审核", notification)
+        self.assertIn("类型：@ 消息回复", notification)
+        self.assertIn("审核阶段：回复草稿待审核", notification)
+        self.assertIn("对方内容：@bot 你好", notification)
+        self.assertIn("回复草稿：你好呀", notification)
+        self.assertIn("帖子 ID：30", notification)
+        self.assertIn("评论 ID：20", notification)
 
     async def test_direct_message_draft_moves_source_into_review_hold(self) -> None:
         message = DirectMessage(
@@ -689,6 +705,13 @@ class ManualReviewFlowTests(unittest.IsolatedAsyncioTestCase):
         reviews = await self.plugin.review_store.search(status="pending")
         self.assertEqual(reviews["total"], 1)
         self.assertEqual(reviews["records"][0]["kind"], "direct_message")
+        self.assertEqual(len(self.plugin.context.sent), 1)
+        umo, notification = self.plugin.context.sent[0]
+        self.assertEqual(umo, "test:FriendMessage:review")
+        self.assertIn("类型：好友私信回复", notification)
+        self.assertIn("对方内容：在吗", notification)
+        self.assertIn("回复草稿：在呢", notification)
+        self.assertIn("消息 ID：50", notification)
 
     async def test_pre_generation_comment_can_be_released_once(self) -> None:
         mention = Mention(
@@ -720,6 +743,47 @@ class ManualReviewFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(await self.plugin.store.is_review_approved(11))
         self.assertEqual(await self.plugin.store.due_items(limit=10), [mention])
+        self.assertIn(
+            "审核阶段：原消息待审核，批准后再生成回复",
+            self.plugin.context.sent[0][1],
+        )
+
+    async def test_review_notification_can_fall_back_or_be_disabled(self) -> None:
+        item = {
+            "id": 7,
+            "kind": "comment",
+            "source": "comment_reply",
+            "phase": "generated_reply",
+            "message_id": "8",
+            "user_id": "9",
+            "user_name": "Carol",
+            "incoming_text": "原消息",
+            "incoming_image_urls": [],
+            "reply_text": "回复草稿",
+            "reply_image_sources": [],
+            "target": {"link_id": 10, "comment_id": 11},
+        }
+        self.plugin.context.sent.clear()
+        self.plugin.config = {
+            "manual_review": {
+                "notify_on_pending": True,
+                "notification_umo": "",
+            },
+            "notifications": {"umo": "test:FriendMessage:fallback"},
+        }
+
+        await self.plugin._notify_review_pending(item)
+
+        self.assertEqual(
+            self.plugin.context.sent[0][0],
+            "test:FriendMessage:fallback",
+        )
+        self.assertIn("类型：别人对机器人评论的回复", self.plugin.context.sent[0][1])
+
+        self.plugin.context.sent.clear()
+        self.plugin.config["manual_review"]["notify_on_pending"] = False
+        await self.plugin._notify_review_pending(item)
+        self.assertEqual(self.plugin.context.sent, [])
 
 
 class DirectMessageRestrictionTests(unittest.IsolatedAsyncioTestCase):

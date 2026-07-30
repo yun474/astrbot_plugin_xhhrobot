@@ -1,7 +1,7 @@
 name: astrbot_plugin_xhhrobot
 display_name: 小黑盒bot
 desc: 小黑盒扫码登录、人设回复、私信、自主巡帖、当前账号视图、消息统计与自然语言工具。
-version: v0.7.1
+version: v0.7.2
 author: Whereis-Alice
 repo: https://github.com/yun474/astrbot_plugin_xhhrobot
 astrbot_version: ">=4.24.5,<5"
