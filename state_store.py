@@ -8,7 +8,7 @@ from typing import Any
 
 from .models import Mention
 
-STATE_VERSION = 4
+STATE_VERSION = 6
 
 
 class StateStore:
@@ -116,6 +116,7 @@ class StateStore:
                     "attempts": 0,
                     "next_attempt_at": 0.0,
                     "last_error": "",
+                    "review_approved": False,
                     "created_at": now,
                     "updated_at": now,
                 }
@@ -183,6 +184,74 @@ class StateStore:
             item["updated_at"] = time.time()
             await self._save_locked()
             return True
+
+    async def mark_review_pending(self, message_id: int) -> bool:
+        """Hold a generated reply without making it eligible for auto dispatch."""
+
+        async with self._lock:
+            item = self._state["queue"].get(str(message_id))
+            if item is None or item.get("status") not in {"pending", "dispatched"}:
+                return False
+            item["status"] = "pending_review"
+            item["updated_at"] = time.time()
+            await self._save_locked()
+            return True
+
+    async def approve_for_generation(self, message_id: int) -> bool:
+        """Release a pre-generation review item back to the event pipeline."""
+
+        async with self._lock:
+            item = self._state["queue"].get(str(message_id))
+            if item is None or item.get("status") != "pending_review":
+                return False
+            item.update(
+                {
+                    "status": "pending",
+                    "review_approved": True,
+                    "last_error": "",
+                    "next_attempt_at": 0.0,
+                    "updated_at": time.time(),
+                }
+            )
+            await self._save_locked()
+            return True
+
+    async def is_review_approved(self, message_id: int) -> bool:
+        async with self._lock:
+            item = self._state["queue"].get(str(message_id))
+            return bool(item and item.get("review_approved", False))
+
+    async def mark_review_sending(self, message_id: int) -> bool:
+        """Atomically claim a human-approved comment for platform delivery."""
+
+        async with self._lock:
+            key = str(message_id)
+            item = self._state["queue"].get(key)
+            if item is None or item.get("status") != "pending_review":
+                return False
+            if self._target_already_claimed_locked(key, item):
+                self._skip_duplicate_locked(key, item)
+                await self._save_locked()
+                return False
+            item["status"] = "sending"
+            item["updated_at"] = time.time()
+            await self._save_locked()
+            return True
+
+    async def return_to_review(self, message_id: int, reason: str) -> None:
+        async with self._lock:
+            item = self._state["queue"].get(str(message_id))
+            if item is None or item.get("status") != "sending":
+                return
+            item.update(
+                {
+                    "status": "pending_review",
+                    "last_error": str(reason or "")[:1000],
+                    "next_attempt_at": 0.0,
+                    "updated_at": time.time(),
+                }
+            )
+            await self._save_locked()
 
     async def mark_dispatched(self, message_id: int) -> bool:
         """Claim a pending item before building its standard AstrBot event."""
@@ -304,6 +373,18 @@ class StateStore:
                 Mention.from_dict(item), "skipped", reason, "", time.time()
             )
             self._state["stats"]["skipped"] += 1
+            await self._save_locked()
+
+    async def mark_rejected(self, message_id: int, reason: str) -> None:
+        async with self._lock:
+            key = str(message_id)
+            item = self._state["queue"].pop(key, None)
+            if item is None:
+                return
+            self._append_recent_locked(
+                Mention.from_dict(item), "rejected", reason, "", time.time()
+            )
+            self._state["stats"]["rejected"] += 1
             await self._save_locked()
 
     async def retry_dead(self, *, include_uncertain: bool = True) -> int:
@@ -563,7 +644,7 @@ class StateStore:
         for other_key, other in self._state["queue"].items():
             if other_key == key or self._item_target(other) != target:
                 continue
-            if other.get("status") in {"dispatched", "sending"}:
+            if other.get("status") in {"dispatched", "pending_review", "sending"}:
                 return True
         return any(
             recent.get("status") == "replied"
@@ -699,6 +780,7 @@ class StateStore:
                 "queued": 0,
                 "ignored": 0,
                 "replied": 0,
+                "rejected": 0,
                 "skipped": 0,
                 "failed_attempts": 0,
                 "dead": 0,

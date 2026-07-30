@@ -17,6 +17,7 @@ from astrbot_plugin_xhhrobot.models import (
     NotificationPage,
     PostContext,
 )
+from astrbot_plugin_xhhrobot.review_store import ReviewStore
 from astrbot_plugin_xhhrobot.state_store import StateStore
 from astrbot_plugin_xhhrobot.xhh_client import XhhError
 
@@ -504,6 +505,216 @@ class CommentImageGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("本评论图片 2 张", str(context.request["prompt"]))
         self.assertIn("被回复评论图片 1 张", str(context.request["prompt"]))
         self.assertIn("帖子图片 1 张", str(context.request["prompt"]))
+
+
+class ManualReviewPolicyTests(unittest.TestCase):
+    def plugin(self, config: dict) -> XhhRobotPlugin:
+        plugin = object.__new__(XhhRobotPlugin)
+        plugin.config = config
+        return plugin
+
+    def test_enabled_review_covers_all_inbound_message_types(self) -> None:
+        plugin = self.plugin({"manual_review": {"enabled": True}})
+
+        self.assertTrue(
+            plugin._requires_human_review(
+                kind="comment", source="mention", user_id="1"
+            )
+        )
+        self.assertTrue(
+            plugin._requires_human_review(
+                kind="comment", source="own_post_comment", user_id="1"
+            )
+        )
+        self.assertTrue(
+            plugin._requires_human_review(
+                kind="comment", source="comment_reply", user_id="1"
+            )
+        )
+        self.assertTrue(
+            plugin._requires_human_review(
+                kind="direct_message", source="direct_message", user_id="1"
+            )
+        )
+
+    def test_direct_message_auto_approve_list_bypasses_only_review(self) -> None:
+        plugin = self.plugin(
+            {
+                "manual_review": {
+                    "enabled": True,
+                    "dm_auto_approve_user_ids": ["42"],
+                }
+            }
+        )
+
+        self.assertFalse(
+            plugin._requires_human_review(
+                kind="direct_message",
+                source="direct_message",
+                user_id="42",
+            )
+        )
+        self.assertTrue(
+            plugin._requires_human_review(
+                kind="direct_message",
+                source="direct_message",
+                user_id="43",
+            )
+        )
+        self.assertTrue(
+            plugin._requires_human_review(
+                kind="comment",
+                source="mention",
+                user_id="42",
+            )
+        )
+
+    def test_review_workflow_switch_controls_pre_generation_hold(self) -> None:
+        before = self.plugin(
+            {
+                "event_bridge": {"enabled": True},
+                "manual_review": {
+                    "enabled": True,
+                    "workflow": "review_then_generate",
+                },
+            }
+        )
+        after = self.plugin(
+            {
+                "event_bridge": {"enabled": True},
+                "manual_review": {
+                    "enabled": True,
+                    "workflow": "generate_then_review",
+                },
+            }
+        )
+
+        self.assertTrue(
+            before._review_before_generation(
+                kind="comment",
+                source="mention",
+                user_id="1",
+            )
+        )
+        self.assertFalse(
+            after._review_before_generation(
+                kind="comment",
+                source="mention",
+                user_id="1",
+            )
+        )
+
+
+class ManualReviewFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        backend = MemoryBackend()
+        self.plugin = object.__new__(XhhRobotPlugin)
+        self.plugin.config = {}
+        self.plugin.store = StateStore(
+            load_value=backend.load,
+            save_value=backend.save,
+        )
+        await self.plugin.store.initialize()
+        self.plugin.dm_store = DirectMessageStore(
+            Path(self.temp_dir.name) / "direct_messages.sqlite3"
+        )
+        self.plugin.review_store = ReviewStore(
+            Path(self.temp_dir.name) / "reviews.sqlite3"
+        )
+        self.plugin.comment_archive = None
+
+    async def test_comment_draft_moves_source_into_review_hold(self) -> None:
+        mention = Mention(
+            message_id=10,
+            comment_id=20,
+            root_comment_id=20,
+            link_id=30,
+            user_id=40,
+            user_name="Alice",
+            comment_text="@bot 你好",
+        )
+        await self.plugin.store.ingest(
+            newest_message_id=10,
+            queued=[mention],
+            ignored=[],
+        )
+        await self.plugin.store.mark_dispatched(10)
+
+        await self.plugin._hold_comment_for_review(
+            mention,
+            "你好呀",
+            [],
+        )
+
+        self.assertEqual(
+            await self.plugin.store.item_status(10),
+            "pending_review",
+        )
+        self.assertEqual(await self.plugin.store.due_items(limit=10), [])
+        reviews = await self.plugin.review_store.search(status="pending")
+        self.assertEqual(reviews["total"], 1)
+        self.assertEqual(reviews["records"][0]["reply_text"], "你好呀")
+
+    async def test_direct_message_draft_moves_source_into_review_hold(self) -> None:
+        message = DirectMessage(
+            event_key="direct_message:40:50",
+            message_id="50",
+            user_id="40",
+            user_name="Alice",
+            text="在吗",
+            image_urls=(),
+            timestamp=100,
+        )
+        await self.plugin.dm_store.enqueue([message])
+        await self.plugin.dm_store.mark_dispatched(message.event_key)
+
+        await self.plugin._hold_direct_message_for_review(
+            message,
+            "在呢",
+            [],
+        )
+
+        self.assertEqual(
+            await self.plugin.dm_store.status(message.event_key),
+            "pending_review",
+        )
+        self.assertEqual(await self.plugin.dm_store.due(limit=10), [])
+        reviews = await self.plugin.review_store.search(status="pending")
+        self.assertEqual(reviews["total"], 1)
+        self.assertEqual(reviews["records"][0]["kind"], "direct_message")
+
+    async def test_pre_generation_comment_can_be_released_once(self) -> None:
+        mention = Mention(
+            message_id=11,
+            comment_id=21,
+            root_comment_id=21,
+            link_id=31,
+            user_id=41,
+            user_name="Bob",
+            comment_text="@bot 帮我看看",
+        )
+        await self.plugin.store.ingest(
+            newest_message_id=11,
+            queued=[mention],
+            ignored=[],
+        )
+        await self.plugin._hold_comment_for_review(
+            mention,
+            "",
+            [],
+            phase="incoming_message",
+        )
+        result = await self.plugin.review_store.search(status="pending")
+        item = await self.plugin.review_store.approve_for_generation(
+            result["records"][0]["id"],
+            expected_revision=result["records"][0]["revision"],
+        )
+        await self.plugin._release_review_for_generation(item)
+
+        self.assertTrue(await self.plugin.store.is_review_approved(11))
+        self.assertEqual(await self.plugin.store.due_items(limit=10), [mention])
 
 
 class DirectMessageRestrictionTests(unittest.IsolatedAsyncioTestCase):

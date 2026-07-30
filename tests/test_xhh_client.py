@@ -252,6 +252,7 @@ class XhhClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page.message_ids, (31, 30, 29))
         self.assertEqual([item.message_id for item in page.items], [31, 29])
         self.assertEqual(page.items[0].source, "own_post_comment")
+        self.assertEqual(page.items[1].source, "comment_reply")
         self.assertEqual(page.items[0].link_id, 51)
         self.assertEqual(page.items[0].user_id, 61)
         self.assertEqual(page.items[0].root_comment_id, 41)
@@ -386,6 +387,7 @@ class XhhClientTests(unittest.IsolatedAsyncioTestCase):
         data = await client.fetch_notifications(kind="all", limit=3)
 
         self.assertEqual([item["message_id"] for item in data["items"]], [103, 102])
+        self.assertEqual(data["items"][0]["source"], "comment_reply")
         self.assertEqual(data["items"][1]["source"], "own_post_comment")
         self.assertEqual(data["fetched_source_counts"]["mention"]["items"], 1)
         self.assertEqual(

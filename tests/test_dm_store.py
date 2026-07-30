@@ -71,6 +71,46 @@ class DirectMessageStoreTests(unittest.IsolatedAsyncioTestCase):
         due = await recovered.due(limit=10)
         self.assertEqual([item.event_key for item in due], [dispatched.event_key])
 
+    async def test_review_hold_is_not_automatically_dispatched(self) -> None:
+        message = self.message("4")
+        await self.store.enqueue([message])
+        await self.store.mark_dispatched(message.event_key)
+
+        self.assertTrue(await self.store.mark_review_pending(message.event_key))
+        self.assertEqual(
+            await self.store.status(message.event_key),
+            "pending_review",
+        )
+        self.assertEqual(await self.store.due(limit=10), [])
+        self.assertTrue(await self.store.mark_review_sending(message.event_key))
+
+        await self.store.return_to_review(message.event_key, "稍后重试")
+        self.assertEqual(
+            await self.store.status(message.event_key),
+            "pending_review",
+        )
+        await self.store.mark_rejected(message.event_key, "无需回复")
+        self.assertEqual(
+            await self.store.status(message.event_key),
+            "rejected",
+        )
+
+    async def test_pre_generation_approval_is_due_and_survives_restart(self) -> None:
+        message = self.message("5")
+        await self.store.enqueue([message])
+        self.assertTrue(await self.store.mark_review_pending(message.event_key))
+        self.assertTrue(await self.store.approve_for_generation(message.event_key))
+        self.assertTrue(await self.store.is_review_approved(message.event_key))
+
+        recovered = DirectMessageStore(
+            self.path,
+            retention_days=0,
+            max_records=10_000,
+        )
+        await recovered.initialize()
+        self.assertTrue(await recovered.is_review_approved(message.event_key))
+        self.assertEqual(await recovered.due(limit=10), [message])
+
     async def test_statistics_search_redaction_and_pagination(self) -> None:
         first = self.message(
             "10",

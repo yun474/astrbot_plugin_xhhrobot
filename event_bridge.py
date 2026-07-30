@@ -68,7 +68,14 @@ class DeliveryResult:
     error: BaseException | None = None
 
 
-DeliveryStartCallback = Callable[[str, list[str]], Awaitable[bool | None]]
+class DeliveryPreparationError(RuntimeError):
+    """The generated reply could not be claimed or persisted before sending."""
+
+
+DeliveryStartCallback = Callable[
+    [str, list[str]],
+    Awaitable[bool | str | None],
+]
 DeliveryCallback = Callable[[str, list[str]], Awaitable[None]]
 ErrorCallback = Callable[[BaseException, str, list[str]], Awaitable[None]]
 
@@ -178,7 +185,39 @@ class XhhMessageEvent(AstrMessageEvent):
                 await super().send(message)
                 return
 
-            delivery_claimed = await self._on_send_start(text, image_sources)
+            try:
+                delivery_claimed = await self._on_send_start(text, image_sources)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                error = DeliveryPreparationError(
+                    f"发送前状态准备失败：{exc}"
+                )
+                self._finish_delivery(
+                    DeliveryResult(
+                        status="error",
+                        text=text,
+                        image_sources=tuple(image_sources),
+                        error=error,
+                    )
+                )
+                await self._on_send_error(error, text, image_sources)
+                raise error from exc
+            if delivery_claimed == "review":
+                logger.info(
+                    "xhhrobot held generated reply for human review: "
+                    "event_key=%s target=%s",
+                    self.target.event_key,
+                    self.target.kind,
+                )
+                self._finish_delivery(
+                    DeliveryResult(
+                        status="pending_review",
+                        text=text,
+                        image_sources=tuple(image_sources),
+                    )
+                )
+                return
             if delivery_claimed is False:
                 logger.info(
                     "xhhrobot suppressed duplicate platform delivery: "

@@ -10,6 +10,7 @@ from astrbot.api.message_components import At, Image, Plain
 from astrbot.api.platform import MessageType
 
 from astrbot_plugin_xhhrobot.event_bridge import (
+    DeliveryPreparationError,
     EventTarget,
     XhhMessageEvent,
     build_comment_message,
@@ -226,6 +227,37 @@ class EventBridgeTests(unittest.IsolatedAsyncioTestCase):
         callbacks["sent"].assert_not_awaited()
         super_send.assert_not_awaited()
         self.assertEqual(event.delivery_future.result().status, "suppressed")
+
+    async def test_human_review_hold_captures_draft_without_sending(self) -> None:
+        event, client, callbacks = self._make_comment_event()
+        callbacks["start"].return_value = "review"
+
+        with patch.object(AstrMessageEvent, "send", new=AsyncMock()) as super_send:
+            await event.send(MessageChain([Plain("等待管理员批准")]))
+
+        callbacks["start"].assert_awaited_once_with("等待管理员批准", [])
+        client.send_reply.assert_not_awaited()
+        callbacks["sent"].assert_not_awaited()
+        super_send.assert_not_awaited()
+        result = event.delivery_future.result()
+        self.assertEqual(result.status, "pending_review")
+        self.assertEqual(result.text, "等待管理员批准")
+
+    async def test_pre_delivery_failure_finishes_monitor_and_reports_error(
+        self,
+    ) -> None:
+        event, client, callbacks = self._make_comment_event()
+        callbacks["start"].side_effect = RuntimeError("数据库不可用")
+
+        with (
+            patch.object(AstrMessageEvent, "send", new=AsyncMock()),
+            self.assertRaises(DeliveryPreparationError),
+        ):
+            await event.send(MessageChain([Plain("无法保存的草稿")]))
+
+        client.send_reply.assert_not_awaited()
+        callbacks["error"].assert_awaited_once()
+        self.assertEqual(event.delivery_future.result().status, "error")
 
     async def test_expired_event_does_not_send_a_late_reply(self) -> None:
         event, client, callbacks = self._make_comment_event()

@@ -53,12 +53,40 @@ class FakeDmStore:
         return {"total": 0, "records": []}
 
 
+class FakeReviewStore:
+    def __init__(self) -> None:
+        self.search_calls: list[dict] = []
+
+    async def statistics(self) -> dict:
+        return {
+            "total": 2,
+            "pending": 1,
+            "status_counts": {"pending": 1, "sent": 1},
+            "kind_counts": {"comment": 1, "direct_message": 1},
+        }
+
+    async def search(self, **kwargs) -> dict:
+        self.search_calls.append(kwargs)
+        return {
+            "total": 1,
+            "records": [
+                {
+                    "id": 1,
+                    "status": "pending",
+                    "reply_text": "待审核草稿",
+                    "content_visible": kwargs["include_content"],
+                }
+            ],
+        }
+
+
 class WebUiTests(unittest.IsolatedAsyncioTestCase):
     def plugin(self, config: dict | None = None) -> XhhRobotPlugin:
         plugin = object.__new__(XhhRobotPlugin)
         plugin.config = config or {"webui": {"enabled": True}}
         plugin.comment_archive = FakeArchive()
         plugin.dm_store = FakeDmStore()
+        plugin.review_store = FakeReviewStore()
         return plugin
 
     async def test_summary_combines_comment_and_direct_message_databases(self) -> None:
@@ -188,8 +216,23 @@ class WebUiTests(unittest.IsolatedAsyncioTestCase):
 
         plugin._register_web_apis()
 
-        self.assertEqual(len(routes), 7)
+        self.assertEqual(len(routes), 10)
         self.assertTrue(all(route[0].startswith(f"/{PLUGIN_ID}/") for route in routes))
+
+    async def test_review_query_honors_content_visibility(self) -> None:
+        plugin = self.plugin(
+            {"webui": {"enabled": True, "show_message_content": False}}
+        )
+        args = {"status": "pending", "kind": "comment"}
+        with (
+            patch.object(main_module, "request", SimpleNamespace(args=args)),
+            patch.object(main_module, "jsonify", side_effect=lambda value: value),
+        ):
+            result = await plugin.web_review_items()
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["content_visible"])
+        self.assertFalse(plugin.review_store.search_calls[0]["include_content"])
 
     def test_dashboard_loads_bridge_before_inline_application(self) -> None:
         page = (
@@ -275,6 +318,19 @@ class WebUiTests(unittest.IsolatedAsyncioTestCase):
             'byId("confirmClearLoginButton").addEventListener("click", clearLogin);',
             page,
         )
+
+    def test_dashboard_contains_review_workflow(self) -> None:
+        page = (
+            Path(__file__).parents[1] / "pages" / "dashboard" / "index.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('data-tab="review"', page)
+        self.assertIn('id="reviewDialog"', page)
+        self.assertIn('postApi("review/approve"', page)
+        self.assertIn('postApi("review/reject"', page)
+        self.assertIn("批准并生成回复", page)
+        self.assertIn('record.phase === "incoming_message"', page)
+        self.assertIn("先审核后生成", page)
 
     async def test_web_login_clear_returns_updated_state_and_cookie_warning(
         self,

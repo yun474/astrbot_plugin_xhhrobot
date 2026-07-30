@@ -90,6 +90,52 @@ class StateStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.store.mark_sending(101))
         self.assertFalse(await self.store.mark_sending(101))
 
+    async def test_review_hold_is_not_due_and_can_be_rejected(self) -> None:
+        await self.store.ingest(
+            newest_message_id=101, queued=[self.mention], ignored=[]
+        )
+        self.assertTrue(await self.store.mark_dispatched(101))
+        self.assertTrue(await self.store.mark_review_pending(101))
+        self.assertEqual(await self.store.item_status(101), "pending_review")
+        self.assertEqual(await self.store.due_items(limit=10), [])
+
+        await self.store.mark_rejected(101, "无需回复")
+        snapshot = await self.store.snapshot()
+        self.assertEqual(snapshot["queue"], {})
+        self.assertEqual(snapshot["recent"][-1]["status"], "rejected")
+        self.assertEqual(snapshot["stats"]["rejected"], 1)
+
+    async def test_approved_review_can_return_to_review_after_safe_failure(self) -> None:
+        await self.store.ingest(
+            newest_message_id=101, queued=[self.mention], ignored=[]
+        )
+        await self.store.mark_dispatched(101)
+        await self.store.mark_review_pending(101)
+
+        self.assertTrue(await self.store.mark_review_sending(101))
+        await self.store.return_to_review(101, "登录失效")
+
+        self.assertEqual(await self.store.item_status(101), "pending_review")
+        self.assertEqual(await self.store.due_items(limit=10), [])
+
+    async def test_pre_generation_approval_survives_restart_and_becomes_due(
+        self,
+    ) -> None:
+        await self.store.ingest(
+            newest_message_id=101, queued=[self.mention], ignored=[]
+        )
+        self.assertTrue(await self.store.mark_review_pending(101))
+        self.assertTrue(await self.store.approve_for_generation(101))
+        self.assertTrue(await self.store.is_review_approved(101))
+
+        recovered = StateStore(
+            load_value=self.backend.load,
+            save_value=self.backend.save,
+        )
+        await recovered.initialize()
+        self.assertTrue(await recovered.is_review_approved(101))
+        self.assertEqual(await recovered.due_items(limit=10), [self.mention])
+
     async def test_retry_exhaustion_moves_to_dead_queue(self) -> None:
         await self.store.ingest(
             newest_message_id=101, queued=[self.mention], ignored=[]

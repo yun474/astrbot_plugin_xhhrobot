@@ -63,7 +63,8 @@
 
       button,
       input,
-      select {
+      select,
+      textarea {
         font: inherit;
         letter-spacing: 0;
       }
@@ -456,6 +457,76 @@
         margin: 20px 0;
       }
 
+      .review-list {
+        display: grid;
+        gap: 12px;
+        margin-top: 18px;
+      }
+
+      .review-card {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 16px;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--surface);
+        box-shadow: var(--shadow);
+      }
+
+      .review-card:hover {
+        border-color: var(--strong-line);
+      }
+
+      .review-card h3 {
+        margin: 0;
+        font-size: 15px;
+      }
+
+      .review-card-meta,
+      .review-card-preview {
+        margin-top: 6px;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+
+      .review-card-preview {
+        display: -webkit-box;
+        overflow: hidden;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        color: var(--text);
+      }
+
+      .review-card-actions {
+        display: flex;
+        align-items: center;
+      }
+
+      .review-editor {
+        width: 100%;
+        min-height: 150px;
+        resize: vertical;
+        padding: 10px 11px;
+        border: 1px solid var(--strong-line);
+        border-radius: 5px;
+        outline: none;
+        background: var(--surface);
+        color: var(--text);
+      }
+
+      .review-editor:focus {
+        border-color: var(--green);
+        box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 18%, transparent);
+      }
+
+      .review-image-list {
+        margin: 8px 0 0;
+        padding-left: 20px;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+
       .distribution h3 {
         margin: 0 0 12px;
         font-size: 14px;
@@ -800,6 +871,10 @@
         .detail-grid {
           grid-template-columns: 1fr;
         }
+
+        .review-card {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </head>
@@ -823,6 +898,9 @@
           </button>
           <button class="tab" type="button" data-tab="login" aria-selected="false">
             扫码登录
+          </button>
+          <button class="tab" type="button" data-tab="review" aria-selected="false">
+            人工审核 <span id="reviewTabCount"></span>
           </button>
           <button class="tab" type="button" data-tab="database" aria-selected="false">
             消息数据库
@@ -902,6 +980,89 @@
             <dl class="kv-list" id="loginDetails"></dl>
             <div id="loginMessage"></div>
           </section>
+        </div>
+      </section>
+
+      <section class="panel" id="reviewPanel" data-panel="review" hidden>
+        <div class="toolbar">
+          <div>
+            <h2>人工审核</h2>
+            <div class="toolbar-note" id="reviewSummary">
+              正在读取待审核回复
+            </div>
+          </div>
+        </div>
+
+        <form class="filters" id="reviewFilterForm">
+          <div class="field keyword">
+            <label for="reviewKeywordInput">关键词</label>
+            <input
+              id="reviewKeywordInput"
+              name="keyword"
+              type="search"
+              maxlength="500"
+            />
+          </div>
+          <div class="field">
+            <label for="reviewStatusSelect">状态</label>
+            <select id="reviewStatusSelect" name="status">
+              <option value="pending">待审核</option>
+              <option value="">全部</option>
+              <option value="approved">等待生成</option>
+              <option value="sending">发送中</option>
+              <option value="sent">已发送</option>
+              <option value="rejected">已拒绝</option>
+              <option value="failed">发送失败</option>
+              <option value="uncertain">结果不确定</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="reviewKindSelect">类型</label>
+            <select id="reviewKindSelect" name="kind">
+              <option value="">全部</option>
+              <option value="comment">评论</option>
+              <option value="direct_message">私信</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="reviewSourceSelect">来源</label>
+            <select id="reviewSourceSelect" name="source">
+              <option value="">全部</option>
+              <option value="mention">@ 消息</option>
+              <option value="own_post_comment">自己帖子评论</option>
+              <option value="comment_reply">评论回复</option>
+              <option value="direct_message">好友私信</option>
+              <option value="stranger_direct_message">陌生人私信</option>
+            </select>
+          </div>
+          <div class="filter-actions">
+            <button class="button primary" type="submit">查询</button>
+            <button class="button" type="button" id="resetReviewFiltersButton">
+              重置
+            </button>
+          </div>
+        </form>
+
+        <div class="review-list" id="reviewList"></div>
+        <div class="empty" id="reviewEmpty">正在读取审核队列</div>
+        <div class="pagination">
+          <div class="toolbar-note" id="reviewPaginationText">0 条记录</div>
+          <div class="pagination-actions">
+            <button
+              class="button compact"
+              type="button"
+              id="previousReviewPageButton"
+            >
+              上一页
+            </button>
+            <button
+              class="button compact"
+              type="button"
+              id="nextReviewPageButton"
+            >
+              下一页
+            </button>
+          </div>
         </div>
       </section>
 
@@ -1014,6 +1175,51 @@
       <div class="dialog-body" id="detailBody"></div>
     </dialog>
 
+    <dialog id="reviewDialog">
+      <div class="dialog-header">
+        <h2>审核回复</h2>
+        <button class="button compact" type="button" id="closeReviewDialogButton">
+          关闭
+        </button>
+      </div>
+      <div class="dialog-body">
+        <div class="detail-grid" id="reviewDetails"></div>
+        <section class="message-block" id="reviewReplyBlock">
+          <h3>对方消息</h3>
+          <pre class="message-content" id="reviewIncomingText"></pre>
+          <ul class="review-image-list" id="reviewIncomingImages"></ul>
+        </section>
+        <section class="message-block">
+          <h3 id="reviewReplyHeading">准备发送的回复</h3>
+          <textarea
+            class="review-editor"
+            id="reviewReplyEditor"
+            maxlength="10000"
+          ></textarea>
+          <ul class="review-image-list" id="reviewReplyImages"></ul>
+          <div class="toolbar-note" id="reviewContentNote"></div>
+        </section>
+        <section class="message-block">
+          <h3>拒绝原因（可选）</h3>
+          <input
+            class="review-editor"
+            style="min-height: 36px"
+            id="reviewRejectReason"
+            maxlength="2000"
+            placeholder="例如：无需回复"
+          />
+        </section>
+        <div class="dialog-actions">
+          <button class="button danger" id="rejectReviewButton" type="button">
+            拒绝
+          </button>
+          <button class="button primary" id="approveReviewButton" type="button">
+            批准并发送
+          </button>
+        </div>
+      </div>
+    </dialog>
+
     <dialog
       class="confirm-dialog"
       id="clearLoginDialog"
@@ -1051,6 +1257,11 @@
         status: null,
         analytics: null,
         loginPollTimer: null,
+        reviewOffset: 0,
+        reviewLimit: 30,
+        reviewTotal: 0,
+        reviews: [],
+        selectedReview: null,
       };
 
       const byId = (id) => document.getElementById(id);
@@ -1176,7 +1387,11 @@
         const events = status.events || {};
         const comments = status.comments || {};
         const dms = status.direct_messages || {};
+        const reviews = status.reviews || {};
         const features = status.features || {};
+        byId("reviewTabCount").textContent = reviews.pending
+          ? `(${fmtNumber(reviews.pending)})`
+          : "";
 
         const accountLabel =
           account.state === "authenticated"
@@ -1186,7 +1401,11 @@
               : "未登录";
         byId("runtimeMetrics").innerHTML = [
           ["账号", accountLabel, account.source || "none"],
-          ["待处理", fmtNumber(events.queue_total), `处理中 ${fmtNumber(events.in_flight)}`],
+          [
+            "待处理",
+            fmtNumber(events.queue_total),
+            `待审核 ${fmtNumber(reviews.pending)} / 处理中 ${fmtNumber(events.in_flight)}`,
+          ],
           [
             "评论归档",
             fmtNumber(comments.received_comments),
@@ -1228,6 +1447,8 @@
 
         byId("featureStatus").innerHTML = kvRows([
           ["自己帖子评论", badge(features.reply_to_own_post_comments ? "启用" : "关闭", features.reply_to_own_post_comments ? "good" : "")],
+          ["评论回复", badge(features.reply_to_comment_replies ? "启用" : "关闭", features.reply_to_comment_replies ? "good" : "")],
+          ["人工审核", badge(features.manual_review ? `启用 / 待审 ${fmtNumber(reviews.pending)}` : "关闭", features.manual_review ? "warn" : "")],
           ["私信自动回复", badge(dms.sending_blocked ? "已暂停" : dms.enabled ? "启用" : "关闭", dms.sending_blocked ? "bad" : dms.enabled ? "good" : "")],
           ["自动巡帖", badge(features.auto_browse ? "启用" : "关闭", features.auto_browse ? "warn" : "")],
           ["LLM 工具", badge(features.llm_tools ? "启用" : "关闭", features.llm_tools ? "info" : "")],
@@ -1303,11 +1524,11 @@
         byId("directionField").hidden = !isComments;
         byId("linkIdField").hidden = !isComments;
         byId("sourceSelect").innerHTML = isComments
-          ? '<option value="">全部</option><option value="mention">@ 消息</option><option value="own_post_comment">自己帖子评论</option>'
+          ? '<option value="">全部</option><option value="mention">@ 消息</option><option value="own_post_comment">自己帖子评论</option><option value="comment_reply">评论回复</option>'
           : '<option value="">全部</option><option value="direct_message">好友私信</option><option value="stranger_direct_message">陌生人私信</option>';
         byId("statusSelect").innerHTML = isComments
-          ? '<option value="">全部</option><option value="queued">已入队</option><option value="dispatched">已提交</option><option value="sending">发送中</option><option value="replied">已回复</option><option value="ignored">已忽略</option><option value="skipped">已跳过</option><option value="retry">待重试</option><option value="uncertain">结果不确定</option><option value="sent">Bot 已发送</option>'
-          : '<option value="">全部</option><option value="baseline">首次基线</option><option value="pending">待处理</option><option value="dispatched">已提交</option><option value="sending">发送中</option><option value="sent">已发送</option><option value="skipped">已跳过</option><option value="failed">失败</option><option value="uncertain">结果不确定</option>';
+          ? '<option value="">全部</option><option value="queued">已入队</option><option value="dispatched">已提交</option><option value="pending_review">待审核</option><option value="sending">发送中</option><option value="replied">已回复</option><option value="rejected">已拒绝</option><option value="ignored">已忽略</option><option value="skipped">已跳过</option><option value="retry">待重试</option><option value="uncertain">结果不确定</option><option value="sent">Bot 已发送</option>'
+          : '<option value="">全部</option><option value="baseline">首次基线</option><option value="pending">待处理</option><option value="dispatched">已提交</option><option value="pending_review">待审核</option><option value="sending">发送中</option><option value="sent">已发送</option><option value="rejected">已拒绝</option><option value="skipped">已跳过</option><option value="failed">失败</option><option value="uncertain">结果不确定</option>';
       }
 
       function messageTime(record) {
@@ -1332,6 +1553,7 @@
           };
           return kinds[record.kind] || "Bot 评论";
         }
+        if ((record.sources || []).includes("comment_reply")) return "评论回复";
         return (record.sources || []).includes("own_post_comment")
           ? "自己帖子评论"
           : "@ 消息";
@@ -1356,8 +1578,8 @@
       function statusTone(status) {
         if (["sent", "replied", "commented"].includes(status)) return "good";
         if (["uncertain", "failed"].includes(status)) return "bad";
-        if (["pending", "dispatched", "sending", "retry"].includes(status)) return "info";
-        if (["skipped", "baseline", "ignored"].includes(status)) return "warn";
+        if (["pending", "pending_review", "approved", "dispatched", "sending", "retry"].includes(status)) return "info";
+        if (["skipped", "rejected", "baseline", "ignored"].includes(status)) return "warn";
         return "";
       }
 
@@ -1367,6 +1589,7 @@
           bot: "Bot 发出",
           mention: "@ 消息",
           own_post_comment: "自己帖子评论",
+          comment_reply: "评论回复",
           direct_message: "好友私信",
           stranger_direct_message: "陌生人私信",
         }[source] || source || "";
@@ -1376,12 +1599,15 @@
         const labels = {
           baseline: "首次基线",
           pending: "待处理",
+          pending_review: "待审核",
+          approved: "等待生成",
           queued: "已入队",
           dispatched: "已提交",
           sending: "发送中",
           replied: "已回复",
           commented: "已评论",
           sent: "已发送",
+          rejected: "已拒绝",
           ignored: "已忽略",
           skipped: "已跳过",
           retry: "待重试",
@@ -1477,6 +1703,219 @@
         } catch (error) {
           byId("databaseSummary").textContent = error.message;
           showToast(error.message, true);
+        }
+      }
+
+      function reviewTypeLabel(record) {
+        if (record.kind === "direct_message") {
+          return record.source === "stranger_direct_message"
+            ? "陌生人私信"
+            : "好友私信";
+        }
+        return sourceLabel(record.source) || "评论";
+      }
+
+      function reviewStatusLabel(status) {
+        if (status === "pending") return "待审核";
+        if (status === "approved") return "审核通过 / 等待生成";
+        return statusLabel(status);
+      }
+
+      function reviewFilterParams() {
+        const form = new FormData(byId("reviewFilterForm"));
+        const params = {
+          limit: state.reviewLimit,
+          offset: state.reviewOffset,
+        };
+        for (const [key, value] of form.entries()) {
+          const text = String(value || "").trim();
+          if (text || key === "status") params[key] = text;
+        }
+        return params;
+      }
+
+      function renderReviews(result) {
+        state.reviews = result.records || [];
+        state.reviewTotal = Number(result.total || 0);
+        const list = byId("reviewList");
+        const empty = byId("reviewEmpty");
+        list.innerHTML = "";
+        if (!state.reviews.length) {
+          empty.hidden = false;
+          empty.textContent = state.reviewTotal
+            ? "当前页没有审核记录"
+            : "没有匹配的审核记录";
+        } else {
+          empty.hidden = true;
+          list.innerHTML = state.reviews
+            .map((record, index) => {
+              const incoming =
+                record.incoming_text ||
+                (record.incoming_image_urls?.length
+                  ? `[图片 ${record.incoming_image_urls.length} 张]`
+                  : "[空消息]");
+              const user = record.user_name || record.user_id || "未知用户";
+              return `<article class="review-card"><div><h3>${escapeHtml(reviewTypeLabel(record))} · ${escapeHtml(user)}</h3><div class="review-card-meta">${escapeHtml(fmtTime(record.created_at))} · ${escapeHtml(record.review_key)}</div><div class="review-card-preview">${escapeHtml(incoming)}</div></div><div class="review-card-actions"><button class="button compact" type="button" data-review-index="${index}">${record.status === "pending" ? "审核" : "查看"}</button></div></article>`;
+            })
+            .join("");
+        }
+        const start = state.reviewTotal ? state.reviewOffset + 1 : 0;
+        const end = Math.min(
+          state.reviewOffset + state.reviews.length,
+          state.reviewTotal,
+        );
+        byId("reviewPaginationText").textContent =
+          `${fmtNumber(state.reviewTotal)} 条记录，显示 ${fmtNumber(start)}-${fmtNumber(end)}`;
+        byId("previousReviewPageButton").disabled = state.reviewOffset <= 0;
+        byId("nextReviewPageButton").disabled =
+          state.reviewOffset + state.reviews.length >= state.reviewTotal ||
+          !state.reviews.length;
+        byId("reviewSummary").textContent = result.enabled
+          ? `人工审核已启用，当前筛选共 ${fmtNumber(state.reviewTotal)} 条`
+          : "人工审核当前未启用；仍可查看已有审核记录";
+      }
+
+      async function loadReviews() {
+        byId("reviewEmpty").hidden = false;
+        byId("reviewEmpty").textContent = "正在读取审核队列";
+        byId("reviewList").innerHTML = "";
+        try {
+          renderReviews(await getApi("review/items", reviewFilterParams()));
+        } catch (error) {
+          byId("reviewEmpty").hidden = false;
+          byId("reviewEmpty").textContent = error.message;
+          showToast(error.message, true);
+        }
+      }
+
+      function renderImageSources(elementId, sources) {
+        const element = byId(elementId);
+        const values = Array.isArray(sources) ? sources : [];
+        element.innerHTML = values
+          .map(
+            (source, index) =>
+              `<li>图片 ${index + 1}：${escapeHtml(source)}</li>`,
+          )
+          .join("");
+        element.hidden = !values.length;
+      }
+
+      function openReview(record) {
+        state.selectedReview = record;
+        const target = record.target || {};
+        byId("reviewDetails").innerHTML = [
+          ["类型", reviewTypeLabel(record)],
+          [
+            "审核方式",
+            record.phase === "incoming_message"
+              ? "先审核后生成"
+              : "先生成后审核",
+          ],
+          ["状态", reviewStatusLabel(record.status)],
+          ["用户", record.user_name || record.user_id || "未知"],
+          ["用户 ID", record.user_id || "无"],
+          ["帖子 ID", target.link_id || "无"],
+          ["评论 ID", target.comment_id || "无"],
+          ["消息 ID", record.message_id || "无"],
+          ["创建时间", fmtTime(record.created_at)],
+        ]
+          .map(
+            ([label, value]) =>
+              `<div class="detail-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`,
+          )
+          .join("");
+        byId("reviewIncomingText").textContent =
+          record.incoming_text || "[仅图片消息]";
+        renderImageSources(
+          "reviewIncomingImages",
+          record.incoming_image_urls,
+        );
+        renderImageSources("reviewReplyImages", record.reply_image_sources);
+        const editor = byId("reviewReplyEditor");
+        const beforeGeneration = record.phase === "incoming_message";
+        byId("reviewReplyBlock").hidden = false;
+        byId("reviewReplyHeading").textContent = beforeGeneration
+          ? "批准后的处理"
+          : "准备发送的回复";
+        editor.hidden = beforeGeneration;
+        editor.value = record.content_visible ? record.reply_text || "" : "";
+        editor.disabled =
+          beforeGeneration ||
+          !record.content_visible ||
+          record.status !== "pending";
+        byId("reviewContentNote").textContent = beforeGeneration
+          ? "批准后才会调用 AstrBot 生成回复，并按正常流程自动发送。"
+          : record.content_visible
+            ? "批准前可以直接修改回复正文；附带图片保持不变。"
+            : "WebUI 正文显示已关闭。批准时会发送数据库中保存的原始草稿，无法在页面编辑。";
+        byId("reviewRejectReason").value = "";
+        byId("reviewRejectReason").disabled = record.status !== "pending";
+        byId("approveReviewButton").hidden = record.status !== "pending";
+        byId("approveReviewButton").textContent = beforeGeneration
+          ? "批准并生成回复"
+          : "批准并发送";
+        byId("rejectReviewButton").hidden = record.status !== "pending";
+        byId("reviewDialog").showModal();
+      }
+
+      async function approveSelectedReview() {
+        const record = state.selectedReview;
+        if (!record || record.status !== "pending") return;
+        const approveButton = byId("approveReviewButton");
+        const rejectButton = byId("rejectReviewButton");
+        approveButton.disabled = true;
+        rejectButton.disabled = true;
+        const beforeGeneration = record.phase === "incoming_message";
+        approveButton.textContent = beforeGeneration ? "批准中" : "发送中";
+        const body = {
+          id: record.id,
+          revision: record.revision,
+          phase: record.phase,
+        };
+        if (!beforeGeneration && record.content_visible) {
+          body.reply_text = byId("reviewReplyEditor").value;
+        }
+        try {
+          const result = await postApi("review/approve", body);
+          byId("reviewDialog").close();
+          showToast(result.message || "回复已发送");
+          await Promise.all([loadReviews(), loadStatus(), loadAnalytics()]);
+        } catch (error) {
+          showToast(error.message, true);
+          await loadReviews();
+        } finally {
+          approveButton.disabled = false;
+          rejectButton.disabled = false;
+          approveButton.textContent = beforeGeneration
+            ? "批准并生成回复"
+            : "批准并发送";
+        }
+      }
+
+      async function rejectSelectedReview() {
+        const record = state.selectedReview;
+        if (!record || record.status !== "pending") return;
+        const approveButton = byId("approveReviewButton");
+        const rejectButton = byId("rejectReviewButton");
+        approveButton.disabled = true;
+        rejectButton.disabled = true;
+        rejectButton.textContent = "拒绝中";
+        try {
+          const result = await postApi("review/reject", {
+            id: record.id,
+            revision: record.revision,
+            reason: byId("reviewRejectReason").value,
+          });
+          byId("reviewDialog").close();
+          showToast(result.message || "审核记录已拒绝");
+          await Promise.all([loadReviews(), loadStatus(), loadAnalytics()]);
+        } catch (error) {
+          showToast(error.message, true);
+          await loadReviews();
+        } finally {
+          approveButton.disabled = false;
+          rejectButton.disabled = false;
+          rejectButton.textContent = "拒绝";
         }
       }
 
@@ -1710,6 +2149,7 @@
           panel.hidden = panel.dataset.panel !== tabName;
         });
         if (tabName === "login") loadLoginSession();
+        if (tabName === "review") loadReviews();
         if (tabName === "database") {
           loadAnalytics();
           loadMessages();
@@ -1740,6 +2180,7 @@
           button.disabled = true;
           await Promise.all([loadStatus(), loadAnalytics()]);
           if (state.activeTab === "database") await loadMessages();
+          if (state.activeTab === "review") await loadReviews();
           button.disabled = false;
         });
         byId("startLoginButton").addEventListener("click", startLogin);
@@ -1748,6 +2189,44 @@
           byId("clearLoginDialog").close();
         });
         byId("confirmClearLoginButton").addEventListener("click", clearLogin);
+        byId("reviewFilterForm").addEventListener("submit", (event) => {
+          event.preventDefault();
+          state.reviewOffset = 0;
+          loadReviews();
+        });
+        byId("resetReviewFiltersButton").addEventListener("click", () => {
+          byId("reviewFilterForm").reset();
+          state.reviewOffset = 0;
+          loadReviews();
+        });
+        byId("previousReviewPageButton").addEventListener("click", () => {
+          state.reviewOffset = Math.max(
+            0,
+            state.reviewOffset - state.reviewLimit,
+          );
+          loadReviews();
+        });
+        byId("nextReviewPageButton").addEventListener("click", () => {
+          state.reviewOffset += state.reviewLimit;
+          loadReviews();
+        });
+        byId("reviewList").addEventListener("click", (event) => {
+          const button = event.target.closest("[data-review-index]");
+          if (button) {
+            openReview(state.reviews[Number(button.dataset.reviewIndex)]);
+          }
+        });
+        byId("closeReviewDialogButton").addEventListener("click", () => {
+          byId("reviewDialog").close();
+        });
+        byId("approveReviewButton").addEventListener(
+          "click",
+          approveSelectedReview,
+        );
+        byId("rejectReviewButton").addEventListener(
+          "click",
+          rejectSelectedReview,
+        );
         byId("filterForm").addEventListener("submit", (event) => {
           event.preventDefault();
           state.offset = 0;

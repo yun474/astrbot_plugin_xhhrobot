@@ -4,6 +4,8 @@
 
 插件独立运行，不需要额外部署桥接服务或数据库服务。登录、消息处理、自动回复、图片上传、数据归档和 WebUI 都由插件完成。
 
+本仓库基于 [Whereis-Alice/astrbot_plugin_xhhrobot](https://github.com/Whereis-Alice/astrbot_plugin_xhhrobot) 继续开发，感谢原作者 Whereis-Alice 创建并开源本插件。
+
 > [!WARNING]
 > 本插件使用的不是小黑盒面向第三方开放的稳定公共 API。接口变化、账号状态和平台风控都可能影响功能。建议先使用测试账号和允许列表验证，并保持默认限速。
 
@@ -20,6 +22,7 @@
 | LLM 工具 | 提供社区浏览、搜索、帖子、评论、用户、话题、收藏、点赞、关注、私信、发帖、草稿和统计工具。 |
 | 图片与富文本 | 将评论、被回复评论、原帖和私信图片交给视觉模型；支持网络图片、本地图片、Base64 图片和有序富文本发帖。 |
 | 消息数据库 | 使用 SQLite 归档评论和私信，保存去重结果、处理状态和机器人发出的评论，并通过 WebUI 或 LLM 工具查询。 |
+| 人工审核 | 可选择先生成回复再审草稿，或先审原消息再生成；指定私信用户可免审自动发送。 |
 | WebUI | 提供扫码登录、运行状态、消息统计、筛选查询和消息详情页面。 |
 | 写入保护 | 写工具默认关闭，并带有管理员权限、允许列表、可选逐次确认、冷却、去重和发送结果不确定保护。 |
 
@@ -42,7 +45,7 @@
 仓库地址：
 
 ```text
-https://github.com/Whereis-Alice/astrbot_plugin_xhhrobot
+https://github.com/yun474/astrbot_plugin_xhhrobot
 ```
 
 ### 2. 配置回复模型和范围
@@ -57,6 +60,7 @@ https://github.com/Whereis-Alice/astrbot_plugin_xhhrobot
 | `filters.allowed_user_ids` | 初次使用时只填写测试用户的小黑盒 ID。 |
 | `filters.allow_all_users` | 确认回复效果和频率后再考虑开启。 |
 | `filters.reply_to_own_post_comments` | 控制是否回复机器人自己帖子下没有明确提及机器人的普通评论，默认开启。 |
+| `filters.reply_to_comment_replies` | 控制是否回复别人对机器人已有评论的直接回复，默认开启。 |
 | `direct_messages.enabled` | 控制私信自动回复，默认关闭。 |
 | `auto_browse.enabled` | 控制自主巡帖，默认关闭。 |
 | `tools.enable_write_tools` | 控制 LLM 写工具，默认关闭。 |
@@ -119,6 +123,7 @@ WebUI 会在页面内绘制二维码，不需要浏览器直接加载小黑盒�
 | --- | --- |
 | 用户在任意帖子中明确提及机器人 | 用户通过允许范围检查后回复。 |
 | 用户在机器人自己发布的帖子下普通评论 | `filters.reply_to_own_post_comments=true` 且用户通过范围检查后回复，无需明确提及机器人。 |
+| 用户直接回复机器人已有评论 | `filters.reply_to_comment_replies=true` 且用户通过范围检查后回复，包括其他账号的帖子。 |
 | 用户在其他账号的帖子下普通评论 | 不回复。 |
 | 机器人自己的评论 | 始终忽略，避免自我回复循环。 |
 
@@ -126,7 +131,42 @@ WebUI 会在页面内绘制二维码，不需要浏览器直接加载小黑盒�
 
 插件会再次读取帖子详情并核验作者，避免把其他账号帖子下的普通评论误认为机器人自己的帖子。相同评论即使同时出现在提及通知和帖子评论通知中，也会按帖子与评论 ID 去重；事件创建、实际外发和重复 `send()` 还分别带有保护，避免同一评论被回复多次。
 
-### 图片上下文
+消息中心的评论消息类型 2 会单独识别为“评论回复”。因此别人回复机器人在其他用户帖子下发表的评论时，也可以进入回复或人工审核流程，不会被“原帖必须属于机器人账号”的普通评论检查误伤。
+
+## 人工审核
+
+开启 `manual_review.enabled` 后，可以通过 `manual_review.workflow` 选择审核时机：
+
+| 选项 | 行为 |
+| --- | --- |
+| `generate_then_review`（先生成回复，再人工审核） | AstrBot 先按当前人设和消息链生成草稿。管理员可以编辑草稿，再批准发送或拒绝。 |
+| `review_then_generate`（先人工审核消息，再生成回复） | 原消息先进入审核队列，不调用模型。管理员批准后才提交给 AstrBot 生成，并按正常流程自动发送。 |
+
+插件 WebUI 的“人工审核”页面可以：
+
+- 查看对方消息、来源、用户、帖子与评论 ID，以及随消息提供的图片。
+- 在先生成后审核模式中，直接修改模型生成的文本，然后批准并发送；模型生成的回复图片会保持原顺序。
+- 在先审核后生成模式中，批准原消息进入生成队列，或在调用模型前直接拒绝。
+- 拒绝不需要发送的回复并记录原因。
+- 按待审核、已发送、已拒绝、失败或结果不确定等状态查询历史。
+
+各消息类型可以分别控制：
+
+| 配置 | 含义 |
+| --- | --- |
+| `manual_review.workflow` | 选择“先生成后审核”或“先审核后生成”。 |
+| `manual_review.review_mentions` | 审核明确 @ 机器人触发的回复。 |
+| `manual_review.review_own_post_comments` | 审核机器人自己帖子下普通评论触发的回复。 |
+| `manual_review.review_comment_replies` | 审核别人对机器人已有评论的回复。 |
+| `manual_review.review_direct_messages` | 审核好友私信回复。 |
+| `manual_review.review_stranger_direct_messages` | 审核陌生人私信回复。 |
+| `manual_review.dm_auto_approve_user_ids` | 这些用户的私信回复跳过审核并自动发送。 |
+
+私信免审列表只改变“是否人工审核”，不会绕过 `filters.allowed_user_ids`、`filters.allow_all_users` 或 `filters.blocked_user_ids`。屏蔽名单始终优先。人工审核依赖 `event_bridge.enabled=true`；关闭标准事件时，兼容回复路径不会生成审核草稿。
+
+批准操作会在真正外发前重新检查用户范围、私信额度、冷却和静默时段。多人同时操作或重复点击只允许一个请求取得处理权。先审核模式的批准状态会持久化；插件重启或安全重试时不会要求再次审核。发送结果无法确认时不会自动重试。关闭 `webui.show_message_content` 后，审核页隐藏正文并禁止编辑，但仍可批准数据库内保存的原始草稿，或批准原消息进入生成队列。
+
+## 图片上下文
 
 评论视觉上下文按以下顺序加入 AstrBot 消息链：
 
@@ -316,6 +356,7 @@ WebUI 会在页面内绘制二维码，不需要浏览器直接加载小黑盒�
 | --- | --- |
 | `comment_archive.sqlite3` | 收到的评论、平台原始观察、机器人自动回复、自主巡帖评论和工具评论。 |
 | `direct_messages.sqlite3` | 私信会话、消息、待处理队列、回复内容和发送状态。 |
+| `review_queue.sqlite3` | 评论与私信的待审核草稿、人工编辑、拒绝原因和发送状态。 |
 | `post_drafts.sqlite3` | 可选的插件本地发帖草稿。 |
 
 评论统计将收到的外部评论和机器人发出的评论分开计算。同一条外部评论以“帖子 ID + 评论 ID”去重，不同通知入口仍可保留为原始观察，因此可以区分：
@@ -390,6 +431,7 @@ curl --proxy 'socks5h://用户名:密码@主机:端口' https://api.ipify.org
 | `ai` | 提供商、人设、额外规则、帖子上下文、图片和生成限制。 |
 | `event_bridge` | 标准事件、并发、超时和外部消息工具隔离。 |
 | `filters` | 自动回复范围、自己帖子评论和用户允许或屏蔽列表。 |
+| `manual_review` | 审核时机、各类消息的人工审核开关和私信免审用户列表。 |
 | `polling` | 提及与普通评论轮询、分页、回复间隔和首次历史策略。 |
 | `direct_messages` | 私信入口、轮询、静默时段、额度和冷却。 |
 | `auto_browse` | 自主巡帖频率、额度、筛选、作者冷却和内容保护。 |
@@ -479,6 +521,7 @@ python -m unittest discover -s astrbot_plugin_xhhrobot/tests -t . -v
 
 ## 致谢
 
+- 感谢原作者 [Whereis-Alice](https://github.com/Whereis-Alice) 创建并开源 [astrbot_plugin_xhhrobot](https://github.com/Whereis-Alice/astrbot_plugin_xhhrobot)，本仓库在其工作基础上继续开发。
 - [AstrBot](https://github.com/AstrBotDevs/AstrBot) 提供插件、标准消息事件、LLM 工具与 WebUI 基础能力。
 - [SomeOvO/xhhRobot](https://github.com/SomeOvO/xhhRobot) 提供小黑盒社区接口与机器人流程的早期协议参考。
 - [advent259141/astrbot_plugin_xiaoheihe_adapter](https://github.com/advent259141/astrbot_plugin_xiaoheihe_adapter) 提供当前网页请求、私信、图片上传和 AstrBot 适配思路的实现参考。

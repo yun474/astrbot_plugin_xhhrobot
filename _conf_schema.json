@@ -205,6 +205,13 @@
         "hint": "开启后，无需 @ 机器人：只要评论位于当前登录账号自己发布的帖子下，就会进入自动回复流程。其他人的帖子仍必须明确 @ 机器人才会回复。首次启用只建立消息游标，不补回旧评论。",
         "obvious_hint": true
       },
+      "reply_to_comment_replies": {
+        "type": "bool",
+        "description": "回复别人对机器人评论的回复",
+        "default": true,
+        "hint": "处理别人直接回复机器人已有评论的消息，包括机器人在其他用户帖子下发表的评论；与自己帖子下的普通评论使用不同来源标识。",
+        "obvious_hint": true
+      },
       "allow_all_users": {
         "type": "bool",
         "description": "允许回复所有用户",
@@ -229,6 +236,76 @@
         },
         "default": [],
         "hint": "列表中的小黑盒用户始终不会收到自动回复，优先级高于允许全部和允许列表。"
+      }
+    }
+  },
+  "manual_review": {
+    "type": "object",
+    "description": "人工审核",
+    "hint": "开启后可选择先生成回复再审核，或先审核原消息再交给 AstrBot 生成；待审核内容会进入插件 WebUI，由管理员批准或拒绝。人工审核依赖标准事件桥。",
+    "obvious_hint": true,
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用人工审核模式",
+        "default": false,
+        "hint": "总开关。开启后仅拦截下方选中的消息类型；私信免审用户仍会自动发送。",
+        "obvious_hint": true
+      },
+      "workflow": {
+        "type": "string",
+        "description": "审核时机",
+        "options": [
+          "generate_then_review",
+          "review_then_generate"
+        ],
+        "labels": [
+          "先生成回复，再人工审核",
+          "先人工审核消息，再生成回复"
+        ],
+        "default": "generate_then_review",
+        "hint": "先生成后审核：AstrBot 先生成草稿，管理员可编辑后批准发送。先审核后生成：收到消息先不调用模型，管理员批准后才交给 AstrBot 生成并自动发送。",
+        "obvious_hint": true
+      },
+      "review_mentions": {
+        "type": "bool",
+        "description": "审核 @ 消息回复",
+        "default": true,
+        "hint": "明确 @ 机器人触发的回复先进入人工审核队列。"
+      },
+      "review_own_post_comments": {
+        "type": "bool",
+        "description": "审核自己帖子评论回复",
+        "default": true,
+        "hint": "机器人自己帖子下普通评论触发的回复先进入人工审核队列。"
+      },
+      "review_comment_replies": {
+        "type": "bool",
+        "description": "审核评论回复",
+        "default": true,
+        "hint": "别人直接回复机器人已有评论时，生成的回复先进入人工审核队列。"
+      },
+      "review_direct_messages": {
+        "type": "bool",
+        "description": "审核好友私信回复",
+        "default": true,
+        "hint": "好友私信生成的回复先进入人工审核队列。"
+      },
+      "review_stranger_direct_messages": {
+        "type": "bool",
+        "description": "审核陌生人私信回复",
+        "default": true,
+        "hint": "陌生人私信生成的回复先进入人工审核队列；仍需同时开启回复陌生人私信。"
+      },
+      "dm_auto_approve_user_ids": {
+        "type": "list",
+        "description": "私信免审用户 ID",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "hint": "这些小黑盒用户的私信回复无需人工审核，会按原自动回复流程直接发送。屏蔽名单始终优先，免审名单不会让原本无权触发回复的用户绕过允许范围。",
+        "obvious_hint": true
       }
     }
   },

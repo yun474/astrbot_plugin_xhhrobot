@@ -60,6 +60,59 @@ class DirectMessageStore:
     async def mark_sending(self, event_key: str) -> None:
         await self._set_status(event_key, "sending")
 
+    async def mark_review_pending(self, event_key: str) -> bool:
+        changed = await self._compare_set_status(
+            event_key,
+            from_status="dispatched",
+            to_status="pending_review",
+        )
+        if changed:
+            return True
+        return await self._compare_set_status(
+            event_key,
+            from_status="pending",
+            to_status="pending_review",
+        )
+
+    async def approve_for_generation(self, event_key: str) -> bool:
+        await self.initialize()
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._approve_for_generation_sync,
+                event_key,
+            )
+
+    async def is_review_approved(self, event_key: str) -> bool:
+        await self.initialize()
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._is_review_approved_sync,
+                event_key,
+            )
+
+    async def mark_review_sending(self, event_key: str) -> bool:
+        return await self._compare_set_status(
+            event_key,
+            from_status="pending_review",
+            to_status="sending",
+        )
+
+    async def return_to_review(self, event_key: str, reason: str) -> None:
+        await self._compare_set_status(
+            event_key,
+            from_status="sending",
+            to_status="pending_review",
+            reason=reason,
+        )
+
+    async def mark_rejected(self, event_key: str, reason: str) -> None:
+        await self._compare_set_status(
+            event_key,
+            from_status="pending_review",
+            to_status="rejected",
+            reason=reason,
+        )
+
     async def mark_sent(
         self,
         event_key: str,
@@ -221,6 +274,24 @@ class DirectMessageStore:
                 reason,
             )
 
+    async def _compare_set_status(
+        self,
+        event_key: str,
+        *,
+        from_status: str,
+        to_status: str,
+        reason: str = "",
+    ) -> bool:
+        await self.initialize()
+        async with self._lock:
+            return await asyncio.to_thread(
+                self._compare_set_status_sync,
+                event_key,
+                from_status,
+                to_status,
+                reason,
+            )
+
     async def _meta(self, key: str) -> str:
         await self.initialize()
         async with self._lock:
@@ -263,7 +334,8 @@ class DirectMessageStore:
                     reply_image_sources TEXT NOT NULL DEFAULT '[]',
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
-                    delivered_at REAL NOT NULL DEFAULT 0
+                    delivered_at REAL NOT NULL DEFAULT 0,
+                    review_approved INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS direct_message_meta (
@@ -284,6 +356,17 @@ class DirectMessageStore:
                     ON direct_messages(delivered_at);
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(direct_messages)"
+                ).fetchall()
+            }
+            if "review_approved" not in columns:
+                connection.execute(
+                    "ALTER TABLE direct_messages ADD COLUMN "
+                    "review_approved INTEGER NOT NULL DEFAULT 0"
+                )
             now = time.time()
             connection.execute(
                 """
@@ -389,6 +472,62 @@ class DirectMessageStore:
                 (status, str(reason or "")[:2000], time.time(), event_key),
             )
             connection.commit()
+        finally:
+            connection.close()
+
+    def _compare_set_status_sync(
+        self,
+        event_key: str,
+        from_status: str,
+        to_status: str,
+        reason: str,
+    ) -> bool:
+        connection = self._connect()
+        try:
+            cursor = connection.execute(
+                """
+                UPDATE direct_messages
+                SET status = ?, status_reason = ?, updated_at = ?
+                WHERE event_key = ? AND status = ?
+                """,
+                (
+                    to_status,
+                    str(reason or "")[:2000],
+                    time.time(),
+                    event_key,
+                    from_status,
+                ),
+            )
+            connection.commit()
+            return cursor.rowcount == 1
+        finally:
+            connection.close()
+
+    def _approve_for_generation_sync(self, event_key: str) -> bool:
+        connection = self._connect()
+        try:
+            cursor = connection.execute(
+                """
+                UPDATE direct_messages
+                SET status = 'pending', status_reason = '',
+                    review_approved = 1, next_attempt_at = 0, updated_at = ?
+                WHERE event_key = ? AND status = 'pending_review'
+                """,
+                (time.time(), event_key),
+            )
+            connection.commit()
+            return cursor.rowcount == 1
+        finally:
+            connection.close()
+
+    def _is_review_approved_sync(self, event_key: str) -> bool:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                "SELECT review_approved FROM direct_messages WHERE event_key = ?",
+                (event_key,),
+            ).fetchone()
+            return bool(row and int(row["review_approved"] or 0))
         finally:
             connection.close()
 
@@ -701,7 +840,9 @@ class DirectMessageStore:
                 """
                 DELETE FROM direct_messages
                 WHERE occurred_at < ?
-                  AND status NOT IN ('pending', 'dispatched', 'sending')
+                  AND status NOT IN (
+                      'pending', 'dispatched', 'pending_review', 'sending'
+                  )
                 """,
                 (cutoff,),
             )
@@ -710,7 +851,9 @@ class DirectMessageStore:
             DELETE FROM direct_messages
             WHERE id IN (
                 SELECT id FROM direct_messages
-                WHERE status NOT IN ('pending', 'dispatched', 'sending')
+                WHERE status NOT IN (
+                    'pending', 'dispatched', 'pending_review', 'sending'
+                )
                 ORDER BY occurred_at DESC, id DESC
                 LIMIT -1 OFFSET ?
             )

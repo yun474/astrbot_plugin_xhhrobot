@@ -364,6 +364,7 @@ class XhhClient:
             payload,
             source="own_post_comment",
             allowed_message_types={"1", "2"},
+            source_by_message_type={"2": "comment_reply"},
         )
 
     async def fetch_notifications(
@@ -472,6 +473,7 @@ class XhhClient:
         *,
         source: str,
         allowed_message_types: set[str] | None = None,
+        source_by_message_type: Mapping[str, str] | None = None,
     ) -> NotificationPage:
         result = cls._result_mapping(dict(payload))
         raw_messages = result.get("messages")
@@ -491,7 +493,11 @@ class XhhClient:
                 and str(raw.get("message_type") or "") not in allowed_message_types
             ):
                 continue
-            mention = Mention.from_mapping(raw, source=source)
+            message_type = str(raw.get("message_type") or "")
+            item_source = (
+                str((source_by_message_type or {}).get(message_type) or source)
+            )
+            mention = Mention.from_mapping(raw, source=item_source)
             if mention.message_id > 0:
                 items.append(mention)
         return NotificationPage(
